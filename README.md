@@ -1,8 +1,10 @@
 # finetrainers 🧪
 
-`cogvideox-factory` was renamed to `finetrainers`. If you're looking to train CogVideoX or Mochi with the legacy training scripts, please refer to [this](./training/README.md) README instead. Everything in the `training/` directory will be eventually moved and supported under `finetrainers`.
-
 FineTrainers is a work-in-progress library to support (accessible) training of video models. Our first priority is to support LoRA training for all popular video models in [Diffusers](https://github.com/huggingface/diffusers), and eventually other methods like controlnets, control-loras, distillation, etc.
+
+> [!NOTE]
+>
+> `cogvideox-factory` was renamed to `finetrainers`. If you're looking to train CogVideoX or Mochi with the legacy training scripts, please refer to [this](./examples/_legacy/) README instead.
 
 <table align="center">
 <tr>
@@ -153,7 +155,19 @@ For inference, refer [here](./docs/training/ltx_video.md#inference). For docs re
 
 If you would like to use a custom dataset, refer to the dataset preparation guide [here](./docs/dataset/README.md).
 
+## Featured Projects 🔥
+
+Checkout some amazing projects citing `finetrainers`:
+- [SkyworkAI's SkyReels-A1](https://github.com/SkyworkAI/SkyReels-A1)
+- [eisneim's LTX Image-to-Video](https://github.com/eisneim/ltx_lora_training_i2v_t2v/)
+- [wileewang's TransPixar](https://github.com/wileewang/TransPixar)
+- [Feizc's Video-In-Context](https://github.com/feizc/Video-In-Context)
+
+Checkout the following UIs built for `finetrainers`:
+- [jbilcke's VideoModelStudio](https://github.com/jbilcke-hf/VideoModelStudio)
+- [neph1's finetrainers-ui](https://github.com/neph1/finetrainers-ui)
+
 ## Acknowledgements
 
 * `finetrainers` builds on top of a body of great open-source libraries: `transformers`, `accelerate`, `peft`, `diffusers`, `bitsandbytes`, `torchao`, `deepspeed` -- to name a few.
-* Some of the design choices of `finetrainers` were inspired by [`SimpleTuner`](https://github.com/bghira/SimpleTuner).
+* Some of the design choices were inspired by [`SimpleTuner`](https://github.com/bghira/SimpleTuner).
