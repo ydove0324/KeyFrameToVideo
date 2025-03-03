@@ -22,6 +22,7 @@ from finetrainers.trainer.sft_trainer.config import SFTLowRankConfig, SFTFullRan
 
 from ..models.ltx_video.base_specification import DummyLTXVideoModelSpecification  # noqa
 from ..models.cogvideox.base_specification import DummyCogVideoXModelSpecification  # noqa
+from ..models.wan.base_specification import DummyWanModelSpecification  # noqa
 
 
 logger = get_logger()
@@ -221,3 +222,11 @@ class SFTTrainerCogVideoXLoRATests___PTD(SFTTrainerLoRATestsMixin___PTD, unittes
 
 class SFTTrainerCogVideoXFullFinetuneTests___PTD(SFTTrainerFullFinetuneTestsMixin___PTD, unittest.TestCase):
     model_specification_cls = DummyCogVideoXModelSpecification
+
+
+class SFTTrainerWanLoRATests___PTD(SFTTrainerLoRATestsMixin___PTD, unittest.TestCase):
+    model_specification_cls = DummyWanModelSpecification
+
+
+class SFTTrainerWanFullFinetuneTests___PTD(SFTTrainerFullFinetuneTestsMixin___PTD, unittest.TestCase):
+    model_specification_cls = DummyWanModelSpecification
