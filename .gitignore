@@ -168,10 +168,9 @@ cython_debug/
 wandb/
 *.txt
 dump*
-*dummy*
 outputs*
 *.slurm
 .vscode/
-*.json
+*dummy*
 
 !requirements.txt
