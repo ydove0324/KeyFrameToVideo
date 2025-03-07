@@ -600,11 +600,17 @@ class IterableDatasetPreprocessingWrapper(
         for sample in iter(self.dataset):
             if self.dataset_type == "image":
                 if self.image_resolution_buckets:
+                    sample["_original_num_frames"] = 1
+                    sample["_original_height"] = sample["image"].size(1)
+                    sample["_original_width"] = sample["image"].size(2)
                     sample["image"] = FF.resize_to_nearest_bucket_image(
                         sample["image"], self.image_resolution_buckets, self.reshape_mode
                     )
             elif self.dataset_type == "video":
                 if self.video_resolution_buckets:
+                    sample["_original_num_frames"] = sample["video"].size(0)
+                    sample["_original_height"] = sample["video"].size(2)
+                    sample["_original_width"] = sample["video"].size(3)
                     sample["video"], _first_frame_only = FF.resize_to_nearest_bucket_video(
                         sample["video"], self.video_resolution_buckets, self.reshape_mode
                     )
@@ -751,8 +757,26 @@ def _initialize_hub_dataset(dataset_name: str, dataset_type: str, infinite: bool
         return _initialize_data_caption_file_dataset_from_hub(dataset_name, dataset_type, infinite)
     elif _has_data_file_caption_file_lists(repo_file_list, remote=True):
         return _initialize_data_file_caption_file_dataset_from_hub(dataset_name, dataset_type, infinite)
-    else:
+
+    has_tar_files = any(file.endswith(".tar") for file in repo_file_list)
+    if has_tar_files:
         return _initialize_webdataset(dataset_name, dataset_type, infinite)
+
+    # TODO(aryan): handle parquet
+    # TODO(aryan): This should be improved
+    caption_files = [pathlib.Path(file).name for file in repo_file_list if file.endswith(".txt")]
+    if len(caption_files) < MAX_PRECOMPUTABLE_ITEMS_LIMIT:
+        try:
+            dataset_root = snapshot_download(dataset_name, repo_type="dataset")
+            if dataset_type == "image":
+                dataset = ImageFolderDataset(dataset_root, infinite=infinite)
+            else:
+                dataset = VideoFolderDataset(dataset_root, infinite=infinite)
+            return dataset
+        except Exception:
+            pass
+
+    raise ValueError(f"Could not load dataset {dataset_name} from the HF Hub")
 
 
 def _initialize_data_caption_file_dataset_from_hub(
