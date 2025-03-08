@@ -2,31 +2,23 @@
 
 Finetrainers is a work-in-progress library to support (accessible) training of diffusion models. Our first priority is to support LoRA training for all popular video models in [Diffusers](https://github.com/huggingface/diffusers), and eventually other methods like controlnets, control-loras, distillation, etc.
 
-`cogvideox-factory` was renamed to `finetrainers`. If you're looking to train CogVideoX or Mochi with the legacy training scripts, please refer to [this](./training/README.md) README instead. Everything in the `training/` directory will be eventually moved and supported under `finetrainers`.
-
 <table align="center">
 <tr>
   <td align="center"><video src="https://github.com/user-attachments/assets/aad07161-87cb-4784-9e6b-16d06581e3e5">Your browser does not support the video tag.</video></td>
+  <td align="center"><video src="https://github.com/user-attachments/assets/c23d53e2-b422-4084-9156-3fce9fd01dad">Your browser does not support the video tag.</video></td>
+</tr>
+<tr>
+  <th align="center">CogVideoX LoRA training as the first iteration of this project</th>
+  <th align="center">Replication of PikaEffects</th>
 </tr>
 </table>
-
-## News
-
-- 🔥 **2025-03-03**: Wan T2V support added!
-- 🔥 **2025-03-03**: We have shipped a complete refactor to support multi-backend distributed training, better precomputation handling for big datasets, model specification format (externally usable for training custom models), FSDP & more.
-- 🔥 **2025-02-12**: We have shipped a set of tooling to curate small and high-quality video datasets for fine-tuning. See [video-dataset-scripts](https://github.com/huggingface/video-dataset-scripts) documentation page for details!
-- 🔥 **2025-02-12**: Check out [eisneim/ltx_lora_training_i2v_t2v](https://github.com/eisneim/ltx_lora_training_i2v_t2v/)! It builds off of `finetrainers` to support image to video training for LTX-Video and STG guidance for inference.
-- 🔥 **2025-01-15**: Support for naive FP8 weight-casting training added! This allows training HunyuanVideo in under 24 GB upto specific resolutions.
-- 🔥 **2025-01-13**: Support for T2V full-finetuning added! Thanks to [@ArEnSc](https://github.com/ArEnSc) for taking up the initiative!
-- 🔥 **2025-01-03**: Support for T2V LoRA finetuning of [CogVideoX](https://huggingface.co/docs/diffusers/main/api/pipelines/cogvideox) added!
-- 🔥 **2024-12-20**: Support for T2V LoRA finetuning of [Hunyuan Video](https://huggingface.co/docs/diffusers/main/api/pipelines/hunyuan_video) added! We would like to thank @SHYuanBest for his work on a training script [here](https://github.com/huggingface/diffusers/pull/10254).
-- 🔥 **2024-12-18**: Support for T2V LoRA finetuning of [LTX Video](https://huggingface.co/docs/diffusers/main/api/pipelines/ltx_video) added!
 
 ## Table of Contents
 
 - [Quickstart](#quickstart)
+- [News](#news)
 - [Support Matrix](#support-matrix)
-- [Featured Projects](#featured-projects)
+- [Featured Projects](#featured-projects-)
 - [Acknowledgements](#acknowledgements)
 
 ## Quickstart
@@ -40,7 +32,7 @@ git fetch --all --tags
 git checkout tags/v0.0.1
 ```
 
-Follow the instructions mentioned in the [README](https://github.com/a-r-r-o-w/finetrainers/tree/v0.0.1) for the release tag.
+Follow the instructions mentioned in the [README](https://github.com/a-r-r-o-w/finetrainers/tree/v0.0.1) for the latest stable release.
 
 #### Using the main branch
 
@@ -59,6 +51,19 @@ Please checkout [`docs/models`](./docs/models/) and [`examples/training`](./exam
 > [!IMPORTANT] 
 > It is recommended to use Pytorch 2.5.1 or above for training. Previous versions can lead to completely black videos, OOM errors, or other issues and are not tested. For fully reproducible training, please use the same environment as mentioned in [environment.md](./docs/environment.md).
 
+## News
+
+- 🔥 **2025-03-07**: CogView4 support added!
+- 🔥 **2025-03-03**: Wan T2V support added!
+- 🔥 **2025-03-03**: We have shipped a complete refactor to support multi-backend distributed training, better precomputation handling for big datasets, model specification format (externally usable for training custom models), FSDP & more.
+- 🔥 **2025-02-12**: We have shipped a set of tooling to curate small and high-quality video datasets for fine-tuning. See [video-dataset-scripts](https://github.com/huggingface/video-dataset-scripts) documentation page for details!
+- 🔥 **2025-02-12**: Check out [eisneim/ltx_lora_training_i2v_t2v](https://github.com/eisneim/ltx_lora_training_i2v_t2v/)! It builds off of `finetrainers` to support image to video training for LTX-Video and STG guidance for inference.
+- 🔥 **2025-01-15**: Support for naive FP8 weight-casting training added! This allows training HunyuanVideo in under 24 GB upto specific resolutions.
+- 🔥 **2025-01-13**: Support for T2V full-finetuning added! Thanks to [@ArEnSc](https://github.com/ArEnSc) for taking up the initiative!
+- 🔥 **2025-01-03**: Support for T2V LoRA finetuning of [CogVideoX](https://huggingface.co/docs/diffusers/main/api/pipelines/cogvideox) added!
+- 🔥 **2024-12-20**: Support for T2V LoRA finetuning of [Hunyuan Video](https://huggingface.co/docs/diffusers/main/api/pipelines/hunyuan_video) added! We would like to thank @SHYuanBest for his work on a training script [here](https://github.com/huggingface/diffusers/pull/10254).
+- 🔥 **2024-12-18**: Support for T2V LoRA finetuning of [LTX Video](https://huggingface.co/docs/diffusers/main/api/pipelines/ltx_video) added!
+
 ## Support Matrix
 
 > [!NOTE]
@@ -72,7 +77,7 @@ Please checkout [`docs/models`](./docs/models/) and [`examples/training`](./exam
 | [HunyuanVideo](./docs/models/hunyuan_video.md) | Text-to-Video | 32 GB                              | OOM                                           |
 | [CogVideoX-5b](./docs/models/cogvideox.md)     | Text-to-Video | 18 GB                              | 53 GB                                         |
 | [Wan](./docs/models/wan.md)                    | Text-to-Video | TODO                               | TODO                                          |
-| [CogView4](./docs/models/cogview4.md)          | Text-to-Video | TODO                               | TODO                                          |
+| [CogView4](./docs/models/cogview4.md)          | Text-to-Image | TODO                               | TODO                                          |
 
 </div>
 
