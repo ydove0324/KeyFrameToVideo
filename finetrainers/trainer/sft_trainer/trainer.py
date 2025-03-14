@@ -730,6 +730,7 @@ class SFTTrainer:
 
         parallel_backend.wait_for_everyone()
         if not final_validation:
+            self._move_components_to_device()
             self.transformer.train()
 
     def _evaluate(self) -> None:
