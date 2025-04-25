@@ -225,12 +225,12 @@ class ControlTrainer:
 
             parallel_backend.apply_fsdp2(
                 model=self.transformer,
-                dp_mesh=parallel_backend.get_mesh()[dp_mesh_names],
                 param_dtype=self.args.transformer_dtype,
                 reduce_dtype=torch.float32,
                 output_dtype=None,
                 pp_enabled=parallel_backend.pipeline_parallel_enabled,
                 cpu_offload=False,  # TODO(aryan): needs to be tested and allowed for enabling later
+                device_mesh=parallel_backend.get_mesh()[dp_mesh_names],
             )
         elif parallel_backend.data_replication_enabled:
             logger.info("Applying DDP to the model")
@@ -451,7 +451,7 @@ class ControlTrainer:
         self.transformer.train()
         data_iterator = iter(self.dataloader)
 
-        compute_posterior = True if self.args.enable_precomputation else (not self.args.precomputation_once)
+        compute_posterior = False if self.args.enable_precomputation else (not self.args.precomputation_once)
         preprocessor = data.initialize_preprocessor(
             rank=parallel_backend.rank,
             num_items=self.args.precomputation_items if self.args.enable_precomputation else 1,
@@ -534,7 +534,7 @@ class ControlTrainer:
                 condition_model_conditions=condition_model_conditions,
                 latent_model_conditions=latent_model_conditions,
                 sigmas=sigmas,
-                compute_posterior=not self.args.precomputation_once,
+                compute_posterior=compute_posterior,
             )
 
             timesteps = (sigmas * 1000.0).long()
