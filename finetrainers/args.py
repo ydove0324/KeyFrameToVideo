@@ -2,22 +2,88 @@ import argparse
 import os
 import pathlib
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import torch
 
 from .config import SUPPORTED_MODEL_CONFIGS, ModelType, TrainingType
 from .logging import get_logger
 from .parallel import ParallelBackendEnum
-from .trainer.config_utils import ConfigMixin
-from .utils import get_non_null_items
+from .utils import ArgsConfigMixin, get_non_null_items
 
 
 logger = get_logger()
 
+# fmt: off
+# Must match src/finetrainers/models/attention_dispatch.py
+AttentionProviderTraining = Literal["flash", "flash_varlen", "flex", "native", "_native_cudnn", "_native_efficient", "_native_flash", "_native_math", "xformers"]
+AttentionProviderValidation = Literal["flash", "flash_varlen", "flex", "native", "_native_cudnn", "_native_efficient", "_native_flash", "_native_math", "sage", "sage_varlen", "_sage_qk_int8_pv_fp8_cuda", "_sage_qk_int8_pv_fp8_cuda_sm90", "_sage_qk_int8_pv_fp16_cuda", "_sage_qk_int8_pv_fp16_triton", "xformers"]
+
+# We do a union because every ArgsConfigMixin registered to BaseArgs can be looked up using the `__getattribute__` override
+BaseArgsType = Union["BaseArgs", "AttentionProviderArgs"]
+# fmt: on
+
+
+class AttentionProviderArgs(ArgsConfigMixin):
+    """
+    Args:
+        attn_provider_training (`List[str]`, defaults to `None`):
+            Must be a string of the form `"<component_name>:<attention_provider>"`. For example, if you want to use
+            flash varlen attention implementation on the `transformer` module, you can set this argument to
+            `"transformer:flash_varlen"`. The attention provider will be used for both training and validation.
+            Options for `<attention_provider>` are:
+                flash, flash_varlen, flex, native, _native_cudnn, _native_efficient, _native_flash, _native_math, xformers
+        attn_provider_inference (`List[str]`, defaults to `None`):
+            Must be a string of the form `"<component_name>:<attention_provider>"`. For example, if you want to use
+            flash varlen attention implementation on the `transformer` module, you can set this argument to
+            `"transformer:flash_varlen"`. The attention provider will be used for both training and validation.
+            Options for `<attention_provider>` are:
+                flash, flash_varlen, flex, native, _native_cudnn, _native_efficient, _native_flash, _native_math,
+                _native_math, sage, sage_varlen, _sage_qk_int8_pv_fp8_cuda, _sage_qk_int8_pv_fp8_cuda_sm90,
+                _sage_qk_int8_pv_fp16_cuda, _sage_qk_int8_pv_fp16_triton, xformers
+    """
+
+    attn_provider_training: List[AttentionProviderTraining] = None
+    attn_provider_inference: List[AttentionProviderValidation] = None
+
+    def add_args(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--attn_provider_training",
+            type=str,
+            default=None,
+            nargs="+",
+            help="Attention provider for training. Must be a string of the form `<component_name>:<attention_provider>`.",
+        )
+        parser.add_argument(
+            "--attn_provider_inference",
+            type=str,
+            default=None,
+            nargs="+",
+            help="Attention provider for inference. Must be a string of the form `<component_name>:<attention_provider>`.",
+        )
+
+    def map_args(self, argparse_args: argparse.Namespace, mapped_args: "BaseArgs"):
+        attn_training = argparse_args.attn_provider_training
+        attn_inference = argparse_args.attn_provider_inference
+        if attn_training is None:
+            attn_training = []
+        if attn_inference is None:
+            attn_inference = []
+        mapped_args.attn_provider_training = attn_training
+        mapped_args.attn_provider_inference = attn_inference
+
+    def validate_args(self, args: "BaseArgs"):
+        pass
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "attn_provider_training": self.attn_provider_training,
+            "attn_provider_inference": self.attn_provider_inference,
+        }
+
 
 class BaseArgs:
-    r"""
+    """
     The arguments for the finetrainers training script.
 
     For helpful information about arguments, run `python train.py --help`.
@@ -314,16 +380,9 @@ class BaseArgs:
     vae_dtype: torch.dtype = torch.bfloat16
     layerwise_upcasting_modules: List[str] = []
     layerwise_upcasting_storage_dtype: torch.dtype = torch.float8_e4m3fn
-    layerwise_upcasting_skip_modules_pattern: List[str] = [
-        "patch_embed",
-        "pos_embed",
-        "x_embedder",
-        "context_embedder",
-        "time_embed",
-        "^proj_in$",
-        "^proj_out$",
-        "norm",
-    ]
+    # fmt: off
+    layerwise_upcasting_skip_modules_pattern: List[str] = ["patch_embed", "pos_embed", "x_embedder", "context_embedder", "time_embed", "^proj_in$", "^proj_out$", "norm"]
+    # fmt: on
 
     # Dataset arguments
     dataset_config: str = None
@@ -399,10 +458,21 @@ class BaseArgs:
     compile_modules: List[str] = []
     compile_scopes: List[str] = None
     allow_tf32: bool = False
-    float32_matmul_precision: Optional[str] = None
+    float32_matmul_precision: str = "highest"
 
-    # Additional registered arguments
-    _registered_config_mixins: List[ConfigMixin] = []
+    # Attention provider arguments
+    attention_provider_args: AttentionProviderArgs = AttentionProviderArgs()
+
+    _registered_config_mixins: List[ArgsConfigMixin] = []
+    _arg_group_map: Dict[str, ArgsConfigMixin] = {}
+
+    def __init__(self):
+        self._arg_group_map: Dict[str, ArgsConfigMixin] = {
+            "attention_provider_args": self.attention_provider_args,
+        }
+
+        for arg_config_mixin in self._arg_group_map.values():
+            self.register_args(arg_config_mixin)
 
     def to_dict(self) -> Dict[str, Any]:
         parallel_arguments = {
@@ -545,7 +615,7 @@ class BaseArgs:
             "torch_config_arguments": torch_config_arguments,
         }
 
-    def register_args(self, config: ConfigMixin) -> None:
+    def register_args(self, config: ArgsConfigMixin) -> None:
         if not hasattr(self, "_extended_add_arguments"):
             self._extended_add_arguments = []
         self._extended_add_arguments.append((config.add_args, config.validate_args, config.map_args))
@@ -582,6 +652,25 @@ class BaseArgs:
                 validate_fn(mapped_args)
 
             return mapped_args
+
+    def __getattribute__(self, name: str):
+        try:
+            return object.__getattribute__(self, name)
+        except AttributeError:
+            for arg_group in self._arg_group_map.values():
+                if hasattr(arg_group, name):
+                    return getattr(arg_group, name)
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    def __setattr__(self, name: str, value: Any):
+        if name in self.__dict__:
+            object.__setattr__(self, name, value)
+            return
+        for arg_group in self._arg_group_map.values():
+            if hasattr(arg_group, name):
+                setattr(arg_group, name, value)
+                return
+        object.__setattr__(self, name, value)
 
 
 def _add_args(parser: argparse.ArgumentParser) -> None:
@@ -749,7 +838,7 @@ def _add_torch_config_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--float32_matmul_precision",
         type=str,
-        default=None,
+        default="highest",
         choices=["highest", "high", "medium"],
         help="The precision to use for float32 matmul. Choose between ['highest', 'high', 'medium'].",
     )

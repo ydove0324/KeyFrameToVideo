@@ -4,7 +4,7 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import datasets.distributed
 import torch
@@ -18,25 +18,24 @@ from huggingface_hub import create_repo, upload_folder
 from peft import LoraConfig, get_peft_model_state_dict
 from tqdm import tqdm
 
-from finetrainers import data, logging, optimizer, parallel, patches, utils
+from finetrainers import data, logging, models, optimizer, parallel, patches, utils
+from finetrainers.args import BaseArgsType
 from finetrainers.config import TrainingType
 from finetrainers.state import State, TrainState
 
+from ..base import Trainer
 from .config import SFTFullRankConfig, SFTLowRankConfig
 
 
-if TYPE_CHECKING:
-    from finetrainers.args import BaseArgs
-    from finetrainers.models import ModelSpecification
-
-ArgsType = Union["BaseArgs", SFTFullRankConfig, SFTLowRankConfig]
+ArgsType = Union[BaseArgsType, SFTFullRankConfig, SFTLowRankConfig]
 
 logger = logging.get_logger()
 
 
-class SFTTrainer:
-    def __init__(self, args: ArgsType, model_specification: "ModelSpecification") -> None:
-        self.args = args
+class SFTTrainer(Trainer):
+    def __init__(self, args: ArgsType, model_specification: models.ModelSpecification) -> None:
+        super().__init__(args)
+
         self.state = State()
         self.state.train_state = TrainState()
 
@@ -478,35 +477,38 @@ class SFTTrainer:
             )
             sigmas = utils.expand_tensor_dims(sigmas, latent_model_conditions["latents"].ndim)
 
-            pred, target, sigmas = self.model_specification.forward(
-                transformer=self.transformer,
-                scheduler=self.scheduler,
-                condition_model_conditions=condition_model_conditions,
-                latent_model_conditions=latent_model_conditions,
-                sigmas=sigmas,
-                compute_posterior=compute_posterior,
-            )
+            # NOTE: for planned refactor, make sure that forward and backward pass run under the context.
+            # If only forward runs under context, backward will most likely fail when using activation checkpointing
+            with self.attention_provider_ctx(training=True):
+                pred, target, sigmas = self.model_specification.forward(
+                    transformer=self.transformer,
+                    scheduler=self.scheduler,
+                    condition_model_conditions=condition_model_conditions,
+                    latent_model_conditions=latent_model_conditions,
+                    sigmas=sigmas,
+                    compute_posterior=compute_posterior,
+                )
 
-            timesteps = (sigmas * 1000.0).long()
-            weights = utils.prepare_loss_weights(
-                scheduler=self.scheduler,
-                alphas=scheduler_alphas[timesteps] if scheduler_alphas is not None else None,
-                sigmas=sigmas,
-                flow_weighting_scheme=self.args.flow_weighting_scheme,
-            )
-            weights = utils.expand_tensor_dims(weights, pred.ndim)
+                timesteps = (sigmas * 1000.0).long()
+                weights = utils.prepare_loss_weights(
+                    scheduler=self.scheduler,
+                    alphas=scheduler_alphas[timesteps] if scheduler_alphas is not None else None,
+                    sigmas=sigmas,
+                    flow_weighting_scheme=self.args.flow_weighting_scheme,
+                )
+                weights = utils.expand_tensor_dims(weights, pred.ndim)
 
-            # 4. Compute loss & backward pass
-            loss = weights.float() * (pred.float() - target.float()).pow(2)
-            # Average loss across all but batch dimension
-            loss = loss.mean(list(range(1, loss.ndim)))
-            # Average loss across batch dimension
-            loss = loss.mean()
-            if self.args.gradient_accumulation_steps > 1:
-                loss = loss / self.args.gradient_accumulation_steps
-            loss.backward()
-            accumulated_loss += loss.detach().item()
-            requires_gradient_step = True
+                # 4. Compute loss & backward pass
+                loss = weights.float() * (pred.float() - target.float()).pow(2)
+                # Average loss across all but batch dimension
+                loss = loss.mean(list(range(1, loss.ndim)))
+                # Average loss across batch dimension
+                loss = loss.mean()
+                if self.args.gradient_accumulation_steps > 1:
+                    loss = loss / self.args.gradient_accumulation_steps
+                loss.backward()
+                accumulated_loss += loss.detach().item()
+                requires_gradient_step = True
 
             # 5. Clip gradients
             model_parts = [self.transformer]
@@ -650,9 +652,10 @@ class SFTTrainer:
                 break
 
             validation_data = validation_data[0]
-            validation_artifacts = self.model_specification.validation(
-                pipeline=pipeline, generator=generator, **validation_data
-            )
+            with self.attention_provider_ctx(training=False):
+                validation_artifacts = self.model_specification.validation(
+                    pipeline=pipeline, generator=generator, **validation_data
+                )
 
             PROMPT = validation_data["prompt"]
             IMAGE = validation_data.get("image", None)
