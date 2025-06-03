@@ -63,3 +63,41 @@ class SFTFullRankConfig(ArgsConfigMixin):
 
     def map_args(self, argparse_args: argparse.Namespace, mapped_args: "BaseArgs"):
         pass
+
+
+class SFTFirstLastFrameConfig(ArgsConfigMixin):
+    r"""
+    Configuration class for First-Last-Frame to Video training.
+    
+    Args:
+        training_mode (str):
+            Training mode, should be 'first_last_frame' for FLF training.
+        min_frames (int):
+            Minimum number of frames required in video data.
+        use_image_conditioning (bool):
+            Whether to use image conditioning for the first and last frames.
+    """
+
+    training_mode: str = "first_last_frame"
+    min_frames: int = 3
+    use_image_conditioning: bool = True
+
+    def add_args(self, parser: argparse.ArgumentParser):
+        parser.add_argument("--training_mode", type=str, default="first_last_frame", choices=["first_last_frame"])
+        parser.add_argument("--min_frames", type=int, default=3)
+        parser.add_argument("--use_image_conditioning", action="store_true")
+
+    def validate_args(self, args: "BaseArgs"):
+        assert self.min_frames >= 2, "min_frames must be at least 2 for first and last frame."
+
+    def map_args(self, argparse_args: argparse.Namespace, mapped_args: "BaseArgs"):
+        mapped_args.training_mode = argparse_args.training_mode
+        mapped_args.min_frames = argparse_args.min_frames
+        mapped_args.use_image_conditioning = argparse_args.use_image_conditioning
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "training_mode": self.training_mode,
+            "min_frames": self.min_frames,
+            "use_image_conditioning": self.use_image_conditioning,
+        }

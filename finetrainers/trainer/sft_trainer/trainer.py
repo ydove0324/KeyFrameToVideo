@@ -23,6 +23,7 @@ from finetrainers.state import TrainState
 
 from ..base import Trainer
 from .config import SFTFullRankConfig, SFTLowRankConfig
+from .flf_data import IterableFirstLastFrameDataset, ValidationFirstLastFrameDataset
 
 
 ArgsType = Union[BaseArgsType, SFTFullRankConfig, SFTLowRankConfig]
@@ -71,7 +72,7 @@ class SFTTrainer(Trainer):
     def run(self) -> None:
         try:
             self._prepare_models()
-            self._prepare_trainable_parameters()
+            # self._prepare_trainable_parameters()
             self._prepare_for_training()
             self._prepare_dataset()
             self._prepare_checkpointing()
@@ -93,7 +94,7 @@ class SFTTrainer(Trainer):
                 "Pipeline parallelism is not supported yet. This will be supported in the future."
             )
 
-    def _prepare_trainable_parameters(self) -> None:
+    def _prepare_trainable_parameters(self) -> None:    # 设置可训练参数
         logger.info("Initializing trainable parameters")
 
         parallel_backend = self.state.parallel_backend
@@ -135,7 +136,7 @@ class SFTTrainer(Trainer):
             if self.args.training_type == TrainingType.LORA:
                 cast_training_params([self.transformer], dtype=torch.float32)
 
-    def _prepare_for_training(self) -> None:
+    def _prepare_for_training(self) -> None:    # 处理并行相关的
         # 1. Apply parallelism
         parallel_backend = self.state.parallel_backend
         model_specification = self.model_specification
@@ -266,6 +267,12 @@ class SFTTrainer(Trainer):
             datasets.append(dataset)
 
         dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True)
+        
+        # Add first-last-frame processing for FLF training
+        if hasattr(self.args, 'training_mode') and self.args.training_mode == 'first_last_frame':
+            logger.info("Wrapping dataset with FirstLastFrame processing")
+            dataset = IterableFirstLastFrameDataset(dataset, min_frames=getattr(self.args, 'min_frames', 3))
+        
         dataloader = self.state.parallel_backend.prepare_dataloader(
             dataset, batch_size=1, num_workers=self.args.dataloader_num_workers, pin_memory=self.args.pin_memory
         )

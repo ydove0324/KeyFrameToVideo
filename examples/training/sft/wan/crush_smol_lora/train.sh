@@ -4,7 +4,7 @@ set -e -x
 
 # export TORCH_LOGS="+dynamo,recompiles,graph_breaks"
 # export TORCHDYNAMO_VERBOSE=1
-export WANDB_MODE="offline"
+export WANDB_MODE="online"
 export NCCL_P2P_DISABLE=1
 export TORCH_NCCL_ENABLE_MONITORING=0
 export FINETRAINERS_LOG_LEVEL="DEBUG"
@@ -15,7 +15,7 @@ BACKEND="ptd"
 
 # In this setting, I'm using 2 GPUs on a 4-GPU node for training
 NUM_GPUS=2
-CUDA_VISIBLE_DEVICES="2,3"
+CUDA_VISIBLE_DEVICES="0,1"
 
 # Check the JSON files for the expected JSON format
 TRAINING_DATASET_CONFIG="examples/training/sft/wan/crush_smol_lora/training.json"
@@ -37,7 +37,7 @@ parallel_cmd=(
 # Model arguments
 model_cmd=(
   --model_name "wan"
-  --pretrained_model_name_or_path "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+  --pretrained_model_name_or_path "/share/project/huangxu/Wan2.1-T2V-1.3B-diffusers"
 )
 
 # Dataset arguments
@@ -70,14 +70,14 @@ diffusion_cmd=(
 training_cmd=(
   --training_type "lora"
   --seed 42
-  --batch_size 1
-  --train_steps 3000
+  --batch_size 2
+  --train_steps 1500
   --rank 32
   --lora_alpha 32
   --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
   --gradient_accumulation_steps 1
-  --gradient_checkpointing
-  --checkpointing_steps 500
+  # --gradient_checkpointing
+  --checkpointing_steps 300
   --checkpointing_limit 2
   # --resume_from_checkpoint 3000
   --enable_slicing
@@ -87,9 +87,9 @@ training_cmd=(
 # Optimizer arguments
 optimizer_cmd=(
   --optimizer "adamw"
-  --lr 5e-5
+  --lr 1e-4
   --lr_scheduler "constant_with_warmup"
-  --lr_warmup_steps 1000
+  --lr_warmup_steps 500
   --lr_num_cycles 1
   --beta1 0.9
   --beta2 0.99
@@ -101,13 +101,13 @@ optimizer_cmd=(
 # Validation arguments
 validation_cmd=(
   --validation_dataset_file "$VALIDATION_DATASET_FILE"
-  --validation_steps 500
+  --validation_steps 300
 )
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan"
-  --output_dir "/raid/aryan/wan"
+  --tracker_name "finetrainers-wan-crush-smol-lora"
+  --output_dir "/raid/aryan/wan-crush-smol-lora"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"

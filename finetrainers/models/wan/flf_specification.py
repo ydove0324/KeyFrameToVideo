@@ -4,15 +4,14 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import PIL.Image
 import torch
-import torch.nn as nn
 from accelerate import init_empty_weights
 from diffusers import (
     AutoencoderKLWan,
     FlowMatchEulerDiscreteScheduler,
     WanImageToVideoPipeline,
     WanPipeline,
+    WanTransformer3DModel,
 )
-from finetrainers.models.wan.transformer_wan import WanTransformer3DModel
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 from transformers import AutoModel, AutoTokenizer, CLIPImageProcessor, CLIPVisionModel, UMT5EncoderModel
 
@@ -193,34 +192,20 @@ class WanImageEncodeProcessor(ProcessorMixin):
         # We know the image here is in the range [-1, 1] (probably a little overshot if using bilinear interpolation), but
         # the processor expects it to be in the range [0, 1].
         image = image if video is None else video[:, 0]  # [B, F, C, H, W] -> [B, C, H, W] (take first frame)
-        image = torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)
-        # image = FF.normalize(image, min=0.0, max=1.0, dim=1)    # 这里的 normalize 为什么会这样呢
+        image = FF.normalize(image, min=0.0, max=1.0, dim=1)
         assert image.ndim == 4, f"Expected 4D tensor, got {image.ndim}D tensor"
 
         if self.use_last_frame:
             last_image = image if video is None else video[:, -1]
-            last_image = torch.clamp((last_image + 1.0) / 2.0, min=0.0, max=1.0)
-            # last_image = FF.normalize(last_image, min=0.0, max=1.0, dim=1)
-            # Process both images separately to maintain batch dimension
-            first_image_processed = image_processor(images=image.float(), do_rescale=False, do_convert_rgb=False, return_tensors="pt")
-            last_image_processed = image_processor(images=last_image.float(), do_rescale=False, do_convert_rgb=False, return_tensors="pt")
-            
-            first_image_processed = first_image_processed.to(device=device, dtype=dtype)
-            last_image_processed = last_image_processed.to(device=device, dtype=dtype)
-            
-            # Get embeddings for both images
-            first_image_embeds = image_encoder(**first_image_processed, output_hidden_states=True).hidden_states[-2]
-            last_image_embeds = image_encoder(**last_image_processed, output_hidden_states=True).hidden_states[-2]
-            
-            # Concatenate in sequence dimension: [B, 257*2, hidden_dim]
-            image_embeds = torch.cat([first_image_embeds, last_image_embeds], dim=1)
-        else:
-            image = image_processor(images=image.float(), do_rescale=False, do_convert_rgb=False, return_tensors="pt")
-            image = image.to(device=device, dtype=dtype)
-            image_embeds = image_encoder(**image, output_hidden_states=True)
-            image_embeds = image_embeds.hidden_states[-2]
+            last_image = FF.normalize(last_image, min=0.0, max=1.0, dim=1)
+            image = torch.stack([image, last_image], dim=0)
+
+        image = image_processor(images=image.float(), do_rescale=False, do_convert_rgb=False, return_tensors="pt")
+        image = image.to(device=device, dtype=dtype)
+        image_embeds = image_encoder(**image, output_hidden_states=True)
+        image_embeds = image_embeds.hidden_states[-2]
         return {self.output_names[0]: image_embeds}
-        
+
 
 class WanModelSpecification(ModelSpecification):
     def __init__(
@@ -238,7 +223,7 @@ class WanModelSpecification(ModelSpecification):
         condition_model_processors: List[ProcessorMixin] = None,
         latent_model_processors: List[ProcessorMixin] = None,
         **kwargs,
-    ) -> None:  # 在一开始的时候把 Conv3D 添加一层，然后再看看 cross-attn 在哪加入
+    ) -> None:
         super().__init__(
             pretrained_model_name_or_path=pretrained_model_name_or_path,
             tokenizer_id=tokenizer_id,
@@ -251,7 +236,7 @@ class WanModelSpecification(ModelSpecification):
             revision=revision,
             cache_dir=cache_dir,
         )
-        self._mock_transformer_config()
+
         use_last_frame = self.transformer_config.get("pos_embed_seq_len", None) is not None
 
         if condition_model_processors is None:      # 要在这里定义清楚 condition 怎么写
@@ -273,12 +258,6 @@ class WanModelSpecification(ModelSpecification):
         self.condition_model_processors = condition_model_processors
         self.latent_model_processors = latent_model_processors
 
-    def _mock_transformer_config(self):
-        '''
-        把T2V的transformer config 改成 I2V 的
-        '''
-        self.transformer_config["pos_embed_seq_len"] = 514
-        self.transformer_config["image_dim"] = 1280
     @property
     def _resolution_dim_keys(self):
         return {"latents": (2, 3, 4)}
@@ -345,18 +324,10 @@ class WanModelSpecification(ModelSpecification):
                 torch_dtype=self.transformer_dtype,
                 **common_kwargs,
             )
-        # 在load_diffusion_models或其他地方调用
-        # transformer = self.mock_conv3d(transformer, new_in_channels=36)
-        # transformer = self.mock_crossattention(transformer)
-        # TODO: mock transformer_config, 搞清楚 pos_embed 有什么用，怎么用在 last_first_frame 上, 搞清楚怎么加载数据,要把 CLIP 这些下载下来,放在对应的文件夹里,然后就可以开始训练了
-        transformer.requires_grad_(False)   # 先只在新增的模块上训练
-        from finetrainers.models.wan.transformer_wan import T2VModel2I2VModelConverter
-        converter = T2VModel2I2VModelConverter(transformer, image_dim=1280, in_channels=36, transformer_config=self.transformer_config)
-        converter.convert()
+
         scheduler = FlowMatchEulerDiscreteScheduler()
 
         return {"transformer": transformer, "scheduler": scheduler}
-
 
     def load_pipeline(
         self,
