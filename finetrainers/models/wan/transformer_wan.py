@@ -500,8 +500,10 @@ class T2VModel2I2VModelConverter:
         self.transformer = self.mock_conv3d(self.transformer, new_in_channels=self.in_channels)
         self.transformer = self.mock_crossattention(self.transformer)
         self.transformer = self.mock_condition_embedder(self.transformer)
-        self.transformer.config.in_channels = self.in_channels
-        self.transformer.config.image_dim = self.image_dim
+        # Update config attributes instead of replacing the entire config object
+        if self.transformer_config:
+            for key, value in self.transformer_config.items():
+                setattr(self.transformer.config, key, value)
 
     def mock_conv3d(self, transformer: WanTransformer3DModel, new_in_channels: int = 36) -> WanTransformer3DModel:
         """
@@ -591,41 +593,41 @@ class T2VModel2I2VModelConverter:
                 target_dtype = existing_param.dtype
                 target_device = existing_param.device
                 
-                # Add image-specific parameters
+                # Add image-specific parameters - use the same names as WanAttnProcessor2_0
                 dim = original_attn.dim if hasattr(original_attn, 'dim') else original_attn.to_q.in_features
                 
-                # Add k_img and v_img linear layers
-                original_attn.k_img = nn.Linear(dim, dim).to(dtype=target_dtype, device=target_device)
-                original_attn.v_img = nn.Linear(dim, dim).to(dtype=target_dtype, device=target_device)
+                # Add add_k_proj and add_v_proj linear layers (matching WanAttnProcessor2_0)
+                original_attn.add_k_proj = nn.Linear(dim, dim).to(dtype=target_dtype, device=target_device)
+                original_attn.add_v_proj = nn.Linear(dim, dim).to(dtype=target_dtype, device=target_device)
                 
-                # Add norm_k_img (check if original has qk_norm)
+                # Add norm_added_k (check if original has qk_norm)
                 has_qk_norm = hasattr(original_attn, 'norm_k') and not isinstance(original_attn.norm_k, nn.Identity)
                 if has_qk_norm:
                     eps = original_attn.norm_k.eps if hasattr(original_attn.norm_k, 'eps') else 1e-6
-                    original_attn.norm_k_img = WanRMSNorm(dim, eps=eps).to(dtype=target_dtype, device=target_device)
+                    original_attn.norm_added_k = WanRMSNorm(dim, eps=eps).to(dtype=target_dtype, device=target_device)
                 else:
-                    original_attn.norm_k_img = nn.Identity()
+                    original_attn.norm_added_k = nn.Identity()
                 
                 # Initialize new parameters to ensure no change in original behavior
                 with torch.no_grad():
-                    # Initialize k_img and v_img weights to zero so img_x starts as zero
-                    nn.init.zeros_(original_attn.k_img.weight)
-                    nn.init.zeros_(original_attn.k_img.bias)
-                    nn.init.zeros_(original_attn.v_img.weight)
-                    nn.init.zeros_(original_attn.v_img.bias)
+                    # Initialize add_k_proj and add_v_proj weights to zero so img_x starts as zero
+                    nn.init.zeros_(original_attn.add_k_proj.weight)
+                    nn.init.zeros_(original_attn.add_k_proj.bias)
+                    nn.init.zeros_(original_attn.add_v_proj.weight)
+                    nn.init.zeros_(original_attn.add_v_proj.bias)
                     
-                    # Initialize norm_k_img to identity if it's RMSNorm
-                    if hasattr(original_attn.norm_k_img, 'weight'):
-                        nn.init.ones_(original_attn.norm_k_img.weight)
+                    # Initialize norm_added_k to identity if it's RMSNorm
+                    if hasattr(original_attn.norm_added_k, 'weight'):
+                        nn.init.ones_(original_attn.norm_added_k.weight)
                 
                 # Ensure all new parameters require gradients
-                original_attn.k_img.weight.requires_grad_(True)
-                original_attn.k_img.bias.requires_grad_(True)
-                original_attn.v_img.weight.requires_grad_(True)
-                original_attn.v_img.bias.requires_grad_(True)
+                original_attn.add_k_proj.weight.requires_grad_(True)
+                original_attn.add_k_proj.bias.requires_grad_(True)
+                original_attn.add_v_proj.weight.requires_grad_(True)
+                original_attn.add_v_proj.bias.requires_grad_(True)
                 
-                if hasattr(original_attn.norm_k_img, 'weight'):
-                    original_attn.norm_k_img.weight.requires_grad_(True)
+                if hasattr(original_attn.norm_added_k, 'weight'):
+                    original_attn.norm_added_k.weight.requires_grad_(True)
 
                 # Update the forward method to handle both text and image context
                 def new_forward(self, x, context):
@@ -646,9 +648,10 @@ class T2VModel2I2VModelConverter:
                         k = self.norm_k(self.to_k(context_text)).view(b, -1, n, d)
                         v = self.to_v(context_text).view(b, -1, n, d)
                         
-                        # Compute key, value for image
-                        k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
-                        v_img = self.v_img(context_img).view(b, -1, n, d)
+                        # Compute key, value for image using add_k_proj and add_v_proj
+                        k_img = self.norm_added_k(self.add_k_proj(context_img)).view(b, -1, n, d)
+                        v_img = self.add_v_proj(context_img).view(b, -1, n, d)
+                        
                         from finetrainers.models.wan.attention import flash_attention
                         # Compute attention for both text and image
                         x_text = flash_attention(q, k, v, k_lens=None)

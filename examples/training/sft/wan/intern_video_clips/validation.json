@@ -1,0 +1,22 @@
+{
+    "data": [
+      {
+        "caption": "",
+        "image_path": null,
+        "video_path": "/share/project/huangxu/video-data/InternVid-clips/00FyajbHzxI_s006.mp4",
+        "num_inference_steps": 50,
+        "height": 480,
+        "width": 832,
+        "num_frames": 17
+      },
+    {
+        "caption": "",
+        "image_path": null,
+        "video_path": "/share/project/huangxu/video-data/InternVid-clips/006Gw0MKTPk_s002.mp4",
+        "num_inference_steps": 50,
+        "height": 480,
+        "width": 832,
+        "num_frames": 17
+      }
+    ]
+  }

@@ -251,7 +251,7 @@ class WanModelSpecification(ModelSpecification):
             revision=revision,
             cache_dir=cache_dir,
         )
-        self._mock_transformer_config()
+        self.transformer_config = self._mock_transformer_config()
         use_last_frame = self.transformer_config.get("pos_embed_seq_len", None) is not None
 
         if condition_model_processors is None:      # 要在这里定义清楚 condition 怎么写
@@ -279,6 +279,9 @@ class WanModelSpecification(ModelSpecification):
         '''
         self.transformer_config["pos_embed_seq_len"] = 514
         self.transformer_config["image_dim"] = 1280
+        self.transformer_config["in_channels"] = 36
+        self.transformer_config["added_kv_proj_dim"] = self.transformer_config["attention_head_dim"] * self.transformer_config["num_attention_heads"]
+        return self.transformer_config
     @property
     def _resolution_dim_keys(self):
         return {"latents": (2, 3, 4)}
@@ -580,7 +583,7 @@ class WanModelSpecification(ModelSpecification):
         if scheduler is not None:
             scheduler.save_pretrained(os.path.join(directory, "scheduler"))
 
-    def _save_model(
+    def _save_model(    # TODO,mock 看看这个怎么搞
         self,
         directory: str,
         transformer: WanTransformer3DModel,
@@ -590,7 +593,7 @@ class WanModelSpecification(ModelSpecification):
         # TODO(aryan): this needs refactoring
         if transformer_state_dict is not None:
             with init_empty_weights():
-                transformer_copy = WanTransformer3DModel.from_config(transformer.config)
+                transformer_copy = WanTransformer3DModel.from_config(self.transformer_config)
             transformer_copy.load_state_dict(transformer_state_dict, strict=True, assign=True)
             transformer_copy.save_pretrained(os.path.join(directory, "transformer"))
         if scheduler is not None:
