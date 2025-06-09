@@ -279,7 +279,7 @@ class WanTransformerBlock(nn.Module):   # 把这个整个 mock 掉，想一下�
 
         # 2. Cross-attention
         norm_hidden_states = self.norm2(hidden_states.float()).type_as(hidden_states)
-        attn_output = self.attn2(x=norm_hidden_states, context=encoder_hidden_states)
+        attn_output = self.attn2(hidden_states=norm_hidden_states, encoder_hidden_states=encoder_hidden_states)
         hidden_states = hidden_states + attn_output
 
         # 3. Feed-forward
@@ -431,6 +431,9 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigi
         timestep_proj = timestep_proj.unflatten(1, (6, -1))
 
         if encoder_hidden_states_image is not None:
+            if encoder_hidden_states_image.shape[0] != encoder_hidden_states.shape[0]:
+                assert encoder_hidden_states_image.shape[0] == 2 * encoder_hidden_states.shape[0]
+                encoder_hidden_states_image = encoder_hidden_states_image.view(encoder_hidden_states.shape[0], -1, encoder_hidden_states_image.shape[2])
             encoder_hidden_states = torch.concat([encoder_hidden_states_image, encoder_hidden_states], dim=1)
 
         # 4. Transformer blocks
@@ -560,22 +563,24 @@ class T2VModel2I2VModelConverter:
         Mock the condition embedder in the transformer to support different input channels.
         """
         original_condition_embedder = transformer.condition_embedder
-        assert original_condition_embedder.image_embedder is None
         
-        # Get dtype and device from existing parameters
-        existing_param = next(original_condition_embedder.parameters())
-        target_dtype = existing_param.dtype
-        target_device = existing_param.device
+        # Only create image_embedder if it doesn't already exist
+        if not hasattr(original_condition_embedder, 'image_embedder') or original_condition_embedder.image_embedder is None:
+            # Get dtype and device from existing parameters
+            existing_param = next(original_condition_embedder.parameters())
+            target_dtype = existing_param.dtype
+            target_device = existing_param.device
+            
+            # Create and move to correct dtype/device
+            image_embedder = WanImageEmbedding(self.image_dim, self.inner_dim)
+            image_embedder = image_embedder.to(dtype=target_dtype, device=target_device)
+            
+            # Ensure all parameters in image_embedder require gradients
+            for param in image_embedder.parameters():
+                param.requires_grad_(True)
+            
+            original_condition_embedder.image_embedder = image_embedder
         
-        # Create and move to correct dtype/device
-        image_embedder = WanImageEmbedding(self.image_dim, self.inner_dim)
-        image_embedder = image_embedder.to(dtype=target_dtype, device=target_device)
-        
-        # Ensure all parameters in image_embedder require gradients
-        for param in image_embedder.parameters():
-            param.requires_grad_(True)
-        
-        original_condition_embedder.image_embedder = image_embedder
         return transformer
 
     def mock_crossattention(self, transformer: WanTransformer3DModel) -> WanTransformer3DModel:
@@ -596,41 +601,45 @@ class T2VModel2I2VModelConverter:
                 # Add image-specific parameters - use the same names as WanAttnProcessor2_0
                 dim = original_attn.dim if hasattr(original_attn, 'dim') else original_attn.to_q.in_features
                 
-                # Add add_k_proj and add_v_proj linear layers (matching WanAttnProcessor2_0)
-                original_attn.add_k_proj = nn.Linear(dim, dim).to(dtype=target_dtype, device=target_device)
-                original_attn.add_v_proj = nn.Linear(dim, dim).to(dtype=target_dtype, device=target_device)
+                # Add add_k_proj and add_v_proj linear layers (matching WanAttnProcessor2_0) if not already present
+                if not hasattr(original_attn, 'add_k_proj') or original_attn.add_k_proj is None:
+                    original_attn.add_k_proj = nn.Linear(dim, dim).to(dtype=target_dtype, device=target_device)
+                    # Initialize add_k_proj weights to zero so img_x starts as zero
+                    with torch.no_grad():
+                        nn.init.zeros_(original_attn.add_k_proj.weight)
+                        nn.init.zeros_(original_attn.add_k_proj.bias)
+                    # Ensure parameters require gradients
+                    original_attn.add_k_proj.weight.requires_grad_(True)
+                    original_attn.add_k_proj.bias.requires_grad_(True)
                 
-                # Add norm_added_k (check if original has qk_norm)
-                has_qk_norm = hasattr(original_attn, 'norm_k') and not isinstance(original_attn.norm_k, nn.Identity)
-                if has_qk_norm:
-                    eps = original_attn.norm_k.eps if hasattr(original_attn.norm_k, 'eps') else 1e-6
-                    original_attn.norm_added_k = WanRMSNorm(dim, eps=eps).to(dtype=target_dtype, device=target_device)
-                else:
-                    original_attn.norm_added_k = nn.Identity()
+                if not hasattr(original_attn, 'add_v_proj') or original_attn.add_v_proj is None:
+                    original_attn.add_v_proj = nn.Linear(dim, dim).to(dtype=target_dtype, device=target_device)
+                    # Initialize add_v_proj weights to zero so img_x starts as zero
+                    with torch.no_grad():
+                        nn.init.zeros_(original_attn.add_v_proj.weight)
+                        nn.init.zeros_(original_attn.add_v_proj.bias)
+                    # Ensure parameters require gradients
+                    original_attn.add_v_proj.weight.requires_grad_(True)
+                    original_attn.add_v_proj.bias.requires_grad_(True)
                 
-                # Initialize new parameters to ensure no change in original behavior
-                with torch.no_grad():
-                    # Initialize add_k_proj and add_v_proj weights to zero so img_x starts as zero
-                    nn.init.zeros_(original_attn.add_k_proj.weight)
-                    nn.init.zeros_(original_attn.add_k_proj.bias)
-                    nn.init.zeros_(original_attn.add_v_proj.weight)
-                    nn.init.zeros_(original_attn.add_v_proj.bias)
-                    
-                    # Initialize norm_added_k to identity if it's RMSNorm
-                    if hasattr(original_attn.norm_added_k, 'weight'):
-                        nn.init.ones_(original_attn.norm_added_k.weight)
-                
-                # Ensure all new parameters require gradients
-                original_attn.add_k_proj.weight.requires_grad_(True)
-                original_attn.add_k_proj.bias.requires_grad_(True)
-                original_attn.add_v_proj.weight.requires_grad_(True)
-                original_attn.add_v_proj.bias.requires_grad_(True)
-                
-                if hasattr(original_attn.norm_added_k, 'weight'):
-                    original_attn.norm_added_k.weight.requires_grad_(True)
+                # Add norm_added_k (check if original has qk_norm) if not already present
+                if not hasattr(original_attn, 'norm_added_k') or original_attn.norm_added_k is None:
+                    has_qk_norm = hasattr(original_attn, 'norm_k') and not isinstance(original_attn.norm_k, nn.Identity)
+                    if has_qk_norm:
+                        eps = original_attn.norm_k.eps if hasattr(original_attn.norm_k, 'eps') else 1e-6
+                        original_attn.norm_added_k = WanRMSNorm(dim, eps=eps).to(dtype=target_dtype, device=target_device)
+                        # Initialize norm_added_k to identity if it's RMSNorm
+                        with torch.no_grad():
+                            nn.init.ones_(original_attn.norm_added_k.weight)
+                        # Ensure parameters require gradients
+                        original_attn.norm_added_k.weight.requires_grad_(True)
+                    else:
+                        original_attn.norm_added_k = nn.Identity()
 
                 # Update the forward method to handle both text and image context
-                def new_forward(self, x, context):
+                def new_forward(self, hidden_states, encoder_hidden_states=None, timestep_proj=None, rotary_emb=None):
+                    x = hidden_states
+                    context = encoder_hidden_states
                     # Define T5_CONTEXT_TOKEN_NUMBER (you may need to adjust this value)
                     T5_CONTEXT_TOKEN_NUMBER = 512  # Adjust based on your configuration TODO: 
                     

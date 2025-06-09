@@ -15,6 +15,7 @@ from diffusers import (
 from finetrainers.models.wan.transformer_wan import WanTransformer3DModel
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 from transformers import AutoModel, AutoTokenizer, CLIPImageProcessor, CLIPVisionModel, UMT5EncoderModel
+from torchvision import transforms
 
 import finetrainers.functional as FF
 from finetrainers.data import VideoArtifact
@@ -23,9 +24,39 @@ from finetrainers.models.modeling_utils import ModelSpecification
 from finetrainers.processors import ProcessorMixin, T5Processor
 from finetrainers.typing import ArtifactType, SchedulerType
 from finetrainers.utils import get_non_null_items, safetensors_torch_save_function
+from diffusers.utils import export_to_video
 
 
 logger = get_logger()
+
+# Initialize the ToPILImage transform for video conversion
+to_pil_image = transforms.ToPILImage(mode="RGB")
+
+
+def export_video_tensor_to_file(video_tensor: torch.Tensor, output_path: str, fps: int = 16) -> None:
+    """
+    Export a video tensor to a video file.
+    
+    Args:
+        video_tensor: Video tensor with shape [C, F, H, W] where C=3 (RGB channels), 
+                     F=frames, H=height, W=width. Values should be in [-1, 1] range.
+        output_path: Path to save the output video file (e.g., "output.mp4")
+        fps: Frame rate for the output video
+    """
+    # Convert from [C, F, H, W] to [F, C, H, W] (frames first)
+    video = video_tensor.permute(1, 0, 2, 3)  # [F, C, H, W]
+    
+    # Clamp values to [-1, 1] range and convert to float32
+    video = video.to(dtype=torch.float32).clamp(-1, 1)
+    
+    # Convert from [-1, 1] to [0, 1] range for PIL Image
+    video = (video + 1.0) / 2.0
+    
+    # Convert each frame to PIL Image
+    video_frames = [to_pil_image(frame).convert("RGB") for frame in video]
+    
+    # Export to video file
+    export_to_video(video_frames, output_path, fps=fps)
 
 
 class WanLatentEncodeProcessor(ProcessorMixin):
@@ -348,9 +379,6 @@ class WanModelSpecification(ModelSpecification):
                 torch_dtype=self.transformer_dtype,
                 **common_kwargs,
             )
-        # 在load_diffusion_models或其他地方调用
-        # transformer = self.mock_conv3d(transformer, new_in_channels=36)
-        # transformer = self.mock_crossattention(transformer)
         # TODO: mock transformer_config, 搞清楚 pos_embed 有什么用，怎么用在 last_first_frame 上, 搞清楚怎么加载数据,要把 CLIP 这些下载下来,放在对应的文件夹里,然后就可以开始训练了
         transformer.requires_grad_(False)   # 先只在新增的模块上训练
         from finetrainers.models.wan.transformer_wan import T2VModel2I2VModelConverter
@@ -383,7 +411,7 @@ class WanModelSpecification(ModelSpecification):
             "vae": vae,
             "scheduler": scheduler,
             "image_encoder": image_encoder,
-            "image_processor": image_processor,
+            # "image_processor": image_processor,
         }
         components = get_non_null_items(components)
         # if self.transformer_config.get("image_dim", None) is not None:  原始代码，这似乎是一个 bug
@@ -397,7 +425,7 @@ class WanModelSpecification(ModelSpecification):
             )
         pipe.text_encoder.to(self.text_encoder_dtype)
         pipe.vae.to(self.vae_dtype)
-
+        self.vae = pipe.vae
         if not training:
             pipe.transformer.to(self.transformer_dtype)
 
@@ -481,6 +509,7 @@ class WanModelSpecification(ModelSpecification):
             latent_condition_mask = latent_model_conditions.pop("latent_condition_mask", None)
         else:
             latents = latent_model_conditions.pop("latents")
+            original_latents = latents.clone()
             latents_mean = latent_model_conditions.pop("latents_mean")
             latents_std = latent_model_conditions.pop("latents_std")
             latent_condition = latent_model_conditions.pop("latent_condition", None)
@@ -504,23 +533,81 @@ class WanModelSpecification(ModelSpecification):
                 latent_condition = posterior.mode()
 
             del posterior
-
         noise = torch.zeros_like(latents).normal_(generator=generator)
         noisy_latents = FF.flow_match_xt(latents, noise, sigmas)
+        _noisy_latents = noisy_latents.clone()
         timesteps = (sigmas.flatten() * 1000.0).long()
 
         if self.transformer_config.get("image_dim", None) is not None:
             noisy_latents = torch.cat([noisy_latents, latent_condition_mask, latent_condition], dim=1)
 
         latent_model_conditions["hidden_states"] = noisy_latents.to(latents)
-
         pred = transformer(
-            **latent_model_conditions,
-            **condition_model_conditions,
-            timestep=timesteps,
-            return_dict=False,
-        )[0]
+                **latent_model_conditions,
+                **condition_model_conditions,
+                timestep=timesteps,
+                return_dict=False,
+            )[0]
         target = FF.flow_match_target(noise, latents)
+        DEBUG = False
+        if DEBUG:
+            # noise - x_0 = pred => x_0 = noise - pred
+            debug_dir = "debug_tensors"
+            os.makedirs(debug_dir, exist_ok=True)
+            
+            # Save hidden_states
+            timestep_val = timesteps[0].item() if len(timesteps) > 0 else 0
+            torch.save(
+                latent_model_conditions["hidden_states"].detach().cpu(),
+                os.path.join(debug_dir, f"hidden_states_t{timestep_val}.pt")
+            )
+            torch.save(
+                condition_model_conditions["encoder_hidden_states"].detach().cpu(),
+                os.path.join(debug_dir, f"encoder_hidden_states_t{timestep_val}.pt")
+            )
+            torch.save(
+                noise.detach().cpu(),
+                os.path.join(debug_dir, f"noise_t{timestep_val}.pt")
+            )
+            
+            # Save encoder_hidden_states_image if it exists
+            if "encoder_hidden_states_image" in latent_model_conditions:
+                torch.save(
+                    latent_model_conditions["encoder_hidden_states_image"].detach().cpu(),
+                    os.path.join(debug_dir, f"encoder_hidden_states_image_t{timestep_val}.pt")
+                )
+            
+            print(f"Saved debug tensors for timestep {timestep_val} to {debug_dir}/")
+            x_0 = noise - pred
+            torch.save(x_0.detach().cpu(), os.path.join(debug_dir, f"x_0_t{timestep_val}.pt"))
+            # print(f"x_0 shape: {x_0.shape}, noise shape: {noise.shape}, pred shape: {pred.shape}")
+            # print(f"x_0: {x_0}, noise: {noise}, pred: {pred}")
+            vae = AutoencoderKLWan.from_pretrained(
+                self.pretrained_model_name_or_path, subfolder="vae", torch_dtype=self.vae_dtype
+            ).to(x_0.device)
+            with torch.no_grad():
+                video = vae.decode(x_0).sample[0]
+            with torch.no_grad():
+                video_2 = vae.decode(_noisy_latents.to(self.vae_dtype)).sample[0]
+            print(f"video shape: {video.shape}")
+            with torch.no_grad():
+                no_img_nosiy_latents = torch.cat([_noisy_latents, torch.zeros_like(latent_condition_mask), torch.zeros_like(latent_condition)], dim=1)
+                latent_model_conditions["hidden_states"] = no_img_nosiy_latents.to(latents)
+                latent_model_conditions["encoder_hidden_states_image"] = torch.zeros_like(latent_model_conditions["encoder_hidden_states_image"])
+                pred_no_img = transformer(
+                    **latent_model_conditions,
+                    **condition_model_conditions,
+                    timestep=timesteps,
+                    return_dict=False,
+                )[0]
+                x_0_no_img = noise - pred_no_img
+                with torch.no_grad():
+                    video_3 = vae.decode(x_0_no_img).sample[0]
+            
+            # Export video tensor to file using the helper function
+            export_video_tensor_to_file(video, f"debug_video/debug_video_{timesteps[0]}.mp4", fps=16)
+            export_video_tensor_to_file(video_2, f"debug_video/debug_noisy_video_{timesteps[0]}.mp4", fps=16)
+            export_video_tensor_to_file(video_3, f"debug_video/debug_no_img_video_{timesteps[0]}.mp4", fps=16)
 
         return pred, target, sigmas
 
@@ -558,6 +645,7 @@ class WanModelSpecification(ModelSpecification):
             generation_kwargs["last_image"] = last_image
         generation_kwargs = get_non_null_items(generation_kwargs)
         video = pipeline(**generation_kwargs).frames[0]
+
         return [VideoArtifact(value=video)]
 
     def _save_lora_weights(

@@ -177,3 +177,5 @@ validation_dataset/
 wan-framepack/
 
 !requirements.txt
+*.mp4
+*.pt

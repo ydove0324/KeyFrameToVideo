@@ -400,6 +400,7 @@ class SFTTrainer(Trainer):
         )
         requires_gradient_step = True
         accumulated_loss = 0.0
+        # self._validate(step=0, final_validation=False)
 
         while (
             train_state.step < self.args.train_steps and train_state.observed_data_samples < self.args.max_data_samples
@@ -407,7 +408,6 @@ class SFTTrainer(Trainer):
             # 1. Load & preprocess data if required
             if preprocessor.requires_data:
                 condition_iterator, latent_iterator = self._prepare_data(preprocessor, data_iterator)
-
             # 2. Prepare batch
             with self.tracker.timed("timing/batch_preparation"):
                 try:
@@ -528,6 +528,7 @@ class SFTTrainer(Trainer):
 
                 logs["train/global_avg_loss"] = global_avg_loss
                 logs["train/global_max_loss"] = global_max_loss
+                logs["train/timesteps"] = timesteps.detach().cpu().numpy().tolist()
                 if grad_norm is not None:
                     logs["train/grad_norm"] = grad_norm
                 train_state.global_avg_losses.append(global_avg_loss)

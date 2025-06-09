@@ -49,9 +49,9 @@ model_cmd=(
 dataset_cmd=(
   --dataset_config $TRAINING_DATASET_CONFIG
   --dataset_shuffle_buffer_size 10
-  --enable_precomputation
-  --precomputation_items 25
-  --precomputation_once
+  # --enable_precomputation
+  # --precomputation_items 25
+  # --precomputation_once
 )
 
 # Dataloader arguments
@@ -70,16 +70,16 @@ diffusion_cmd=(
 training_cmd=(
   --training_type "full-finetune"
   --seed 42
-  --batch_size 2
-  --train_steps 1500
+  --batch_size 4
+  --train_steps 7500
 #   --rank 32
 #   --lora_alpha 32
 #   --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
   --gradient_accumulation_steps 1
   --gradient_checkpointing
-  --checkpointing_steps 300
+  --checkpointing_steps 500
   --checkpointing_limit 2
-  # --resume_from_checkpoint 3000
+  --resume_from_checkpoint 3750
   --enable_slicing
   --enable_tiling
 )
@@ -89,7 +89,7 @@ optimizer_cmd=(
   --optimizer "adamw"
   --lr 1e-4
   --lr_scheduler "constant_with_warmup"
-  --lr_warmup_steps 500
+  --lr_warmup_steps 750
   --lr_num_cycles 1
   --beta1 0.9
   --beta2 0.99
@@ -101,7 +101,7 @@ optimizer_cmd=(
 # Validation arguments
 validation_cmd=(
   --validation_dataset_file "$VALIDATION_DATASET_FILE"
-  --validation_steps 300
+  --validation_steps 500
 )
 
 # Miscellaneous arguments
