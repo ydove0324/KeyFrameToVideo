@@ -351,7 +351,7 @@ class PTDCheckpointer(BaseCheckpointer):
 
         return checkpoint_dir.as_posix()
 
-    def load(self, step: int = -1) -> bool:
+    def load(self, step: int = -1,disableDataloader=False) -> bool:
         if not self.enable:
             return False
         if not self.output_dir.exists():
@@ -370,6 +370,8 @@ class PTDCheckpointer(BaseCheckpointer):
 
         # For step 0, optimizers/schedulers are not available as they are created during training after first step
         states = {"model": self.states["model"]} if step == 0 else self.states
+        if disableDataloader:
+            states = {k: v for k, v in states.items() if k != "dataloader"}
 
         # See bug: https://github.com/pytorch/pytorch/pull/138575
         original_stateful_states = {

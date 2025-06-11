@@ -78,6 +78,7 @@ def encode_text(prompt: str, tokenizer, text_encoder, max_length: int = 512):
         padding="max_length",
         max_length=max_length,
         truncation=True,
+        add_special_tokens=True,
         return_tensors="pt",
     )
     
@@ -85,9 +86,9 @@ def encode_text(prompt: str, tokenizer, text_encoder, max_length: int = 512):
         text_embeddings = text_encoder(
             input_ids=text_inputs.input_ids.to(device),
             attention_mask=text_inputs.attention_mask.to(device),
-        )
+        )[0]
     
-    return text_embeddings.last_hidden_state
+    return text_embeddings
 
 
 def encode_first_last_frame(first_image: PIL.Image.Image, last_image: PIL.Image.Image, image_encoder, image_processor):
@@ -237,11 +238,11 @@ def manual_inference(
         ], dim=1)
         
         # Prepare transformer inputs
-        if i == 0:
+        # if i == 0:
             # latent_model_input = torch.load("debug_tensors/hidden_states_t1000.pt").to("cuda")
             # encoder_hidden_states_image = torch.load("debug_tensors/encoder_hidden_states_image_t1000.pt").to("cuda")
             # noise = torch.load("debug_tensors/noise_t1000.pt").to("cuda")
-            encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
+            # encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
         transformer_inputs = {
             "hidden_states": latent_model_input,
             "encoder_hidden_states": encoder_hidden_states,
@@ -275,7 +276,7 @@ if __name__ == "__main__":
     prompt = ""
     
     # Load first and last frame images
-    video_path = "0-2ynjpRQWI.mp4"
+    video_path = "validate_video/3c841f88f857edf61a9b4b10ebcff3816c861835.mp4"
     video_tensor = load_video_as_tensor(video_path, height=480, width=832)
     first_frame = tensor_to_pil(video_tensor[0])
     last_frame = tensor_to_pil(video_tensor[16])

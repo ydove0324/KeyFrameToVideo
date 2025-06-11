@@ -4,7 +4,7 @@ import traceback
 from finetrainers import BaseArgs, ControlTrainer, SFTTrainer, TrainingType, get_logger
 from finetrainers.config import _get_model_specifiction_cls
 from finetrainers.trainer.control_trainer.config import ControlFullRankConfig, ControlLowRankConfig
-from finetrainers.trainer.sft_trainer.config import SFTFullRankConfig, SFTLowRankConfig
+from finetrainers.trainer.sft_trainer.config import SFTFullRankConfig, SFTLowRankConfig, SFTVideoSegmentConfig
 
 
 logger = get_logger()
@@ -44,6 +44,10 @@ def main():
             raise ValueError(f"Training type {training_type} not supported.")
 
         args.register_args(training_cls())
+        
+        # Always register video segmentation config for SFT trainers
+        if training_type in [TrainingType.LORA, TrainingType.FULL_FINETUNE]:
+            args.register_args(SFTVideoSegmentConfig())
         args = args.parse_args()
 
         model_specification_cls = _get_model_specifiction_cls(args.model_name, args.training_type)

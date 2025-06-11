@@ -101,3 +101,46 @@ class SFTFirstLastFrameConfig(ArgsConfigMixin):
             "min_frames": self.min_frames,
             "use_image_conditioning": self.use_image_conditioning,
         }
+
+
+class SFTVideoSegmentConfig(ArgsConfigMixin):
+    r"""
+    Configuration class for Video Segmentation training.
+    
+    Args:
+        enable_video_segmentation (bool):
+            Whether to enable video segmentation dataset.
+        frames_per_segment (int):
+            Number of frames per video segment (default: 17).
+        overlap_frames (int):
+            Number of overlapping frames between segments (default: 0).
+    """
+
+    enable_video_segmentation: bool = False
+    frames_per_segment: int = 17
+    overlap_frames: int = 0
+
+    def add_args(self, parser: argparse.ArgumentParser):
+        parser.add_argument("--enable_video_segmentation", action="store_true", 
+                          help="Enable video segmentation dataset")
+        parser.add_argument("--frames_per_segment", type=int, default=17,
+                          help="Number of frames per video segment")
+        parser.add_argument("--overlap_frames", type=int, default=0,
+                          help="Number of overlapping frames between segments")
+
+    def validate_args(self, args: "BaseArgs"):
+        assert self.frames_per_segment > 0, "frames_per_segment must be positive"
+        assert self.overlap_frames >= 0, "overlap_frames must be non-negative"
+        assert self.overlap_frames < self.frames_per_segment, "overlap_frames must be less than frames_per_segment"
+
+    def map_args(self, argparse_args: argparse.Namespace, mapped_args: "BaseArgs"):
+        mapped_args.enable_video_segmentation = argparse_args.enable_video_segmentation
+        mapped_args.frames_per_segment = argparse_args.frames_per_segment
+        mapped_args.overlap_frames = argparse_args.overlap_frames
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enable_video_segmentation": self.enable_video_segmentation,
+            "frames_per_segment": self.frames_per_segment,
+            "overlap_frames": self.overlap_frames,
+        }

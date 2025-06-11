@@ -23,7 +23,7 @@ from finetrainers.state import TrainState
 
 from ..base import Trainer
 from .config import SFTFullRankConfig, SFTLowRankConfig
-from .flf_data import IterableFirstLastFrameDataset, ValidationFirstLastFrameDataset
+from .video_segment_data import IterableVideoSegmentDataset, ValidationVideoSegmentDataset
 
 
 ArgsType = Union[BaseArgsType, SFTFullRankConfig, SFTLowRankConfig]
@@ -254,7 +254,7 @@ class SFTTrainer(Trainer):
             dataset_name_or_root = data_root or dataset_file
             dataset = data.initialize_dataset(
                 dataset_name_or_root, dataset_type, streaming=True, infinite=True, _caption_options=caption_options
-            )
+            )   # 在这里把数据加载进来
 
             if not dataset._precomputable_once and self.args.precomputation_once:
                 raise ValueError(
@@ -263,15 +263,22 @@ class SFTTrainer(Trainer):
 
             logger.info(f"Initialized dataset: {dataset_name_or_root}")
             dataset = self.state.parallel_backend.prepare_dataset(dataset)
-            dataset = data.wrap_iterable_dataset_for_preprocessing(dataset, dataset_type, config)
+            dataset = data.wrap_iterable_dataset_for_preprocessing(dataset, dataset_type, config)   # 这里把数据进行 preprocess,包括抽帧和resize
             datasets.append(dataset)
 
         dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True)
         
-        # Add first-last-frame processing for FLF training
-        if hasattr(self.args, 'training_mode') and self.args.training_mode == 'first_last_frame':
-            logger.info("Wrapping dataset with FirstLastFrame processing")
-            dataset = IterableFirstLastFrameDataset(dataset, min_frames=getattr(self.args, 'min_frames', 3))
+        
+        # Add video segmentation processing if enabled
+        if hasattr(self.args, 'enable_video_segmentation') and self.args.enable_video_segmentation:
+            frames_per_segment = getattr(self.args, 'frames_per_segment', 17)
+            overlap_frames = getattr(self.args, 'overlap_frames', 0)
+            logger.info(f"Wrapping dataset with VideoSegment processing: {frames_per_segment} frames per segment, {overlap_frames} overlap frames")
+            dataset = IterableVideoSegmentDataset(
+                dataset, 
+                frames_per_segment=frames_per_segment,
+                overlap_frames=overlap_frames
+            )
         
         dataloader = self.state.parallel_backend.prepare_dataloader(
             dataset, batch_size=1, num_workers=self.args.dataloader_num_workers, pin_memory=self.args.pin_memory
@@ -314,7 +321,7 @@ class SFTTrainer(Trainer):
 
         enable_state_checkpointing = self.args.checkpointing_steps > 0
         self.checkpointer = parallel_backend.get_checkpointer(
-            dataloader=self.dataloader,
+            dataloader=self.dataloader, 
             model_parts=[self.transformer],
             optimizers=self.optimizer,
             schedulers=self.lr_scheduler,
@@ -330,7 +337,7 @@ class SFTTrainer(Trainer):
         if resume_from_checkpoint == "latest":
             resume_from_checkpoint = -1
         if resume_from_checkpoint is not None:
-            self.checkpointer.load(resume_from_checkpoint)
+            self.checkpointer.load(resume_from_checkpoint,disableDataloader=True)
 
     def _train(self) -> None:
         logger.info("Starting training")
