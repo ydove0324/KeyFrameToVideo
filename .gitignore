@@ -179,3 +179,4 @@ wan-framepack/
 !requirements.txt
 *.mp4
 *.pt
+log

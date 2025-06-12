@@ -47,6 +47,8 @@ def main():
                 continue
 
             # 目标链接路径
+            if not src.name.endswith('.mp4'):
+                continue
             dest_link = DEST_DIR / src.name
             # 如果已经存在同名链接或文件，先移除
             if dest_link.exists() or dest_link.is_symlink():

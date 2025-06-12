@@ -4,18 +4,21 @@ from typing import Any, Dict, Iterator, Optional, Union
 
 import torch
 import torch.utils.data
+import torch.distributed
 from finetrainers import logging
 import time
 
 logger = logging.get_logger()
 
 
-class IterableVideoSegmentDataset(torch.utils.data.IterableDataset):
+class IterableVideoSegmentDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
     """
     Dataset that reads from metadata.jsonl and splits videos into segments.
     Each segment contains a specified number of frames (e.g., 17 or 9 frames).
     The dataset splits videos from head to tail and discards remaining frames 
     that cannot form a complete segment.
+    
+    Supports distributed training by automatically sharding data across ranks.
     """
 
     def __init__(
@@ -36,6 +39,7 @@ class IterableVideoSegmentDataset(torch.utils.data.IterableDataset):
         self.base_dataset = base_dataset
         self.frames_per_segment = frames_per_segment
         self.overlap_frames = overlap_frames
+        self._sample_index = 0
         
         if self.frames_per_segment <= 0:
             raise ValueError("frames_per_segment must be positive")
@@ -47,15 +51,25 @@ class IterableVideoSegmentDataset(torch.utils.data.IterableDataset):
     def __iter__(self) -> Iterator[Dict[str, Any]]:
         """
         Iterate through the dataset, yielding video segments.
+        Supports distributed training by sharding based on rank.
         """
+        # Get distributed info
+        world_size = 1
+        rank = 0
+        if torch.distributed.is_initialized():
+            world_size = torch.distributed.get_world_size()
+            rank = torch.distributed.get_rank()
+        
+        segment_count = 0
         for data in self.base_dataset:
             # Process each video and yield segments
-            start_time = time.time()
             segments = self._segment_video_data(data)
-            end_time = time.time()
-            logger.info(f"Segmented video in {end_time - start_time} seconds")
             for segment in segments:
-                yield segment
+                # Distributed sharding: only yield segments assigned to this rank
+                if segment_count % world_size == rank:
+                    self._sample_index += 1
+                    yield segment
+                segment_count += 1
 
     def _segment_video_data(self, data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
         """
@@ -122,6 +136,19 @@ class IterableVideoSegmentDataset(torch.utils.data.IterableDataset):
             segment_idx += 1
             
         logger.debug(f"Generated {segment_idx} segments from video with {num_frames} frames")
+
+    def load_state_dict(self, state_dict):
+        """Load state for checkpoint resumption."""
+        self._sample_index = state_dict.get("sample_index", 0)
+        if hasattr(self.base_dataset, 'load_state_dict'):
+            self.base_dataset.load_state_dict(state_dict.get("base_dataset", {}))
+
+    def state_dict(self):
+        """Save state for checkpointing."""
+        state = {"sample_index": self._sample_index}
+        if hasattr(self.base_dataset, 'state_dict'):
+            state["base_dataset"] = self.base_dataset.state_dict()
+        return state
 
 
 class ValidationVideoSegmentDataset(torch.utils.data.Dataset):

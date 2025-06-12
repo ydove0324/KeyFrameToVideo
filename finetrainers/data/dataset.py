@@ -774,13 +774,13 @@ class IterableDatasetPreprocessingWrapper(
 
 
 class IterableCombinedDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
-    def __init__(self, datasets: List[torch.utils.data.IterableDataset], buffer_size: int, shuffle: bool = False):
+    def __init__(self, datasets: List[torch.utils.data.IterableDataset], buffer_size: int, shuffle: bool = False,prof=None):
         super().__init__()
 
         self.datasets = datasets
         self.buffer_size = buffer_size
         self.shuffle = shuffle
-
+        self.prof = prof
         logger.info(
             f"Initializing IterableCombinedDataset with the following configuration:\n"
             f"  - Number of Datasets: {len(datasets)}\n"
@@ -845,9 +845,9 @@ def initialize_dataset(
 
 
 def combine_datasets(
-    datasets: List[torch.utils.data.IterableDataset], buffer_size: int, shuffle: bool = False
+    datasets: List[torch.utils.data.IterableDataset], buffer_size: int, shuffle: bool = False,prof=None
 ) -> torch.utils.data.IterableDataset:
-    return IterableCombinedDataset(datasets=datasets, buffer_size=buffer_size, shuffle=shuffle)
+    return IterableCombinedDataset(datasets=datasets, buffer_size=buffer_size, shuffle=shuffle,prof=prof)
 
 
 def wrap_iterable_dataset_for_preprocessing(

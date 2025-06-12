@@ -1,7 +1,7 @@
 {
     "datasets": [
       {
-        "data_root": "./pexel_part",
+        "data_root": "./pexel",
         "dataset_type": "video",
         "id_token": "",
         "video_resolution_buckets": [

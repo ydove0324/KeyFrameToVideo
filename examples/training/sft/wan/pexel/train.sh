@@ -49,7 +49,7 @@ model_cmd=(
 # (which is something we've to improve [TODO(aryan)])
 dataset_cmd=(
   --dataset_config $TRAINING_DATASET_CONFIG
-  --dataset_shuffle_buffer_size 10
+  --dataset_shuffle_buffer_size 2
   # --enable_precomputation
   # --precomputation_items 25
   # --precomputation_once
@@ -86,10 +86,10 @@ training_cmd=(
   --resume_from_checkpoint 7500
   --enable_slicing
   --enable_tiling
-  --enable_precomputation
-  --precomputation_items 128
-  --enable_precomputation_reuse
-  --precomputation_dir "/share/project/huangxu/precomputation-pexel"
+  # --enable_precomputation
+  # --precomputation_items 128
+  # --enable_precomputation_reuse
+  # --precomputation_dir "/share/project/huangxu/precomputation-pexel"
 )
 
 # Optimizer arguments

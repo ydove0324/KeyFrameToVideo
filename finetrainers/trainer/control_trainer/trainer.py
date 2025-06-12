@@ -72,14 +72,14 @@ class ControlTrainer(Trainer):
             args.frame_conditioning_type, args.frame_conditioning_index, args.frame_conditioning_concatenate_mask
         )
 
-    def run(self) -> None:
+    def run(self,prof=None) -> None:
         try:
             self._prepare_models()
             self._prepare_trainable_parameters()
             self._prepare_for_training()
             self._prepare_dataset()
             self._prepare_checkpointing()
-            self._train()
+            self._train(prof)
             # trainer._evaluate()
         except Exception as e:
             logger.error(f"Error during training: {e}")
@@ -374,7 +374,7 @@ class ControlTrainer(Trainer):
         if resume_from_checkpoint is not None:
             self.checkpointer.load(resume_from_checkpoint)
 
-    def _train(self) -> None:
+    def _train(self,prof=None) -> None:
         logger.info("Starting training")
 
         parallel_backend = self.state.parallel_backend
@@ -628,6 +628,8 @@ class ControlTrainer(Trainer):
             )
 
         parallel_backend.destroy()
+        if prof is not None:
+            prof.step()
 
     def _validate(self, step: int, final_validation: bool = False) -> None:
         if self.args.validation_dataset_file is None:

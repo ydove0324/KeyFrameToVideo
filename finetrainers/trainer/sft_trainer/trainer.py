@@ -69,14 +69,14 @@ class SFTTrainer(Trainer):
         self.model_specification = model_specification
         self._are_condition_models_loaded = False
 
-    def run(self) -> None:
+    def run(self,prof=None) -> None:
         try:
             self._prepare_models()
             # self._prepare_trainable_parameters()
             self._prepare_for_training()
-            self._prepare_dataset()
+            self._prepare_dataset(prof)
             self._prepare_checkpointing()
-            self._train()
+            self._train(prof)
             # trainer._evaluate()
         except Exception as e:
             logger.error(f"Error during training: {e}")
@@ -234,7 +234,7 @@ class SFTTrainer(Trainer):
         self._init_trackers()
         self._init_directories_and_repositories()
 
-    def _prepare_dataset(self) -> None:
+    def _prepare_dataset(self,prof=None) -> None:
         logger.info("Initializing dataset and dataloader")
 
         with open(self.args.dataset_config, "r") as file:
@@ -265,8 +265,9 @@ class SFTTrainer(Trainer):
             dataset = self.state.parallel_backend.prepare_dataset(dataset)
             dataset = data.wrap_iterable_dataset_for_preprocessing(dataset, dataset_type, config)   # 这里把数据进行 preprocess,包括抽帧和resize
             datasets.append(dataset)
-
-        dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True)
+        if prof is not None:
+            prof.step()
+        dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True,prof=prof)
         
         
         # Add video segmentation processing if enabled
@@ -339,7 +340,7 @@ class SFTTrainer(Trainer):
         if resume_from_checkpoint is not None:
             self.checkpointer.load(resume_from_checkpoint,disableDataloader=True)
 
-    def _train(self) -> None:
+    def _train(self,prof=None) -> None:
         logger.info("Starting training")
 
         parallel_backend = self.state.parallel_backend
@@ -496,6 +497,8 @@ class SFTTrainer(Trainer):
 
                 accumulated_loss += loss.detach().item()
                 requires_gradient_step = True
+                if prof is not None:
+                    prof.step()
 
             # 5. Clip gradients
             model_parts = [self.transformer]
@@ -535,7 +538,12 @@ class SFTTrainer(Trainer):
 
                 logs["train/global_avg_loss"] = global_avg_loss
                 logs["train/global_max_loss"] = global_max_loss
-                logs["train/timesteps"] = timesteps.detach().cpu().numpy().tolist()
+                # Extract first number from potentially nested list
+                timesteps_list = timesteps.detach().cpu().numpy().tolist()
+                first_timestep = timesteps_list
+                while isinstance(first_timestep, list) and len(first_timestep) > 0:
+                    first_timestep = first_timestep[0]
+                logs["train/timesteps"] = first_timestep
                 if grad_norm is not None:
                     logs["train/grad_norm"] = grad_norm
                 train_state.global_avg_losses.append(global_avg_loss)

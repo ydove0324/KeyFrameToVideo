@@ -14,7 +14,7 @@ import decord
 
 # Available models: Wan-AI/Wan2.1-T2V-14B-Diffusers, Wan-AI/Wan2.1-T2V-1.3B-Diffusers
 model_id = "/share/project/huangxu/Wan2.1-T2V-1.3B-diffusers"
-transformer_path = "/share/project/huangxu/wan-t2v-debug-intern-video-clips/model_weights/007500"
+transformer_path = "/share/project/huangxu/wan-t2v-overfit-debug-intern-video-clips/model_weights/002000"
 
 
 # Load models
@@ -238,11 +238,11 @@ def manual_inference(
         ], dim=1)
         
         # Prepare transformer inputs
-        # if i == 0:
+        if i == 0:
             # latent_model_input = torch.load("debug_tensors/hidden_states_t1000.pt").to("cuda")
-            # encoder_hidden_states_image = torch.load("debug_tensors/encoder_hidden_states_image_t1000.pt").to("cuda")
+            encoder_hidden_states_image = torch.load("debug_tensors/encoder_hidden_states_image_t1000.pt").to("cuda")
             # noise = torch.load("debug_tensors/noise_t1000.pt").to("cuda")
-            # encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
+            encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
         transformer_inputs = {
             "hidden_states": latent_model_input,
             "encoder_hidden_states": encoder_hidden_states,
@@ -276,7 +276,7 @@ if __name__ == "__main__":
     prompt = ""
     
     # Load first and last frame images
-    video_path = "validate_video/3c841f88f857edf61a9b4b10ebcff3816c861835.mp4"
+    video_path = "validate_video/0CWZMaN4uAE_s006.mp4"
     video_tensor = load_video_as_tensor(video_path, height=480, width=832)
     first_frame = tensor_to_pil(video_tensor[0])
     last_frame = tensor_to_pil(video_tensor[16])
