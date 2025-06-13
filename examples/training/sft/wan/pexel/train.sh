@@ -86,6 +86,7 @@ training_cmd=(
   --resume_from_checkpoint 7500
   --enable_slicing
   --enable_tiling
+  --train_added_modules_only true
   # --enable_precomputation
   # --precomputation_items 128
   # --enable_precomputation_reuse

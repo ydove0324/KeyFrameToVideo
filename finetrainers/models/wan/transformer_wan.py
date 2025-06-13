@@ -493,20 +493,47 @@ class WanRMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
 
 class T2VModel2I2VModelConverter:
-    def __init__(self, transformer: WanTransformer3DModel, image_dim: int = 1280, in_channels: int = 36,inner_dim: int = 1536, transformer_config: dict = None):
+    def __init__(self, transformer: WanTransformer3DModel, image_dim: int = 1280, in_channels: int = 36,inner_dim: int = 1536, transformer_config: dict = None, train_added_modules_only: bool = True):
         self.transformer = transformer
         self.image_dim = image_dim
         self.in_channels = in_channels
         self.transformer_config = transformer_config
         self.inner_dim = inner_dim
+        self.train_added_modules_only = train_added_modules_only
+        self.added_modules = []  # 用于存储新增的模块
+        
     def convert(self):
+        # 如果只训练新增模块，先冻结所有原有参数
+        if self.train_added_modules_only:
+            self.transformer.requires_grad_(False)
+        
         self.transformer = self.mock_conv3d(self.transformer, new_in_channels=self.in_channels)
         self.transformer = self.mock_crossattention(self.transformer)
         self.transformer = self.mock_condition_embedder(self.transformer)
+        
         # Update config attributes instead of replacing the entire config object
         if self.transformer_config:
             for key, value in self.transformer_config.items():
                 setattr(self.transformer.config, key, value)
+        
+        # 如果只训练新增模块，现在启用新增模块的训练
+        if self.train_added_modules_only:
+            self._enable_added_modules_training()
+
+    def _enable_added_modules_training(self):
+        """启用新增模块的训练"""
+        for module in self.added_modules:
+            for param in module.parameters():
+                param.requires_grad_(True)
+    
+    def _add_to_training_modules(self, module):
+        """将模块添加到新增模块列表中"""
+        if module not in self.added_modules:
+            self.added_modules.append(module)
+
+    def get_added_modules(self):
+        """获取所有新增的模块列表"""
+        return self.added_modules.copy()
 
     def mock_conv3d(self, transformer: WanTransformer3DModel, new_in_channels: int = 36) -> WanTransformer3DModel:
         """
@@ -556,6 +583,9 @@ class T2VModel2I2VModelConverter:
         # Replace the conv3d layer
         transformer.patch_embedding = new_conv3d
         
+        # 记录新增的模块用于训练控制
+        self._add_to_training_modules(new_conv3d)
+        
         return transformer
 
     def mock_condition_embedder(self, transformer: WanTransformer3DModel) -> WanTransformer3DModel:
@@ -580,6 +610,9 @@ class T2VModel2I2VModelConverter:
                 param.requires_grad_(True)
             
             original_condition_embedder.image_embedder = image_embedder
+            
+            # 记录新增的模块用于训练控制
+            self._add_to_training_modules(image_embedder)
         
         return transformer
 
@@ -611,6 +644,9 @@ class T2VModel2I2VModelConverter:
                     # Ensure parameters require gradients
                     original_attn.add_k_proj.weight.requires_grad_(True)
                     original_attn.add_k_proj.bias.requires_grad_(True)
+                    
+                    # 记录新增的模块用于训练控制
+                    self._add_to_training_modules(original_attn.add_k_proj)
                 
                 if not hasattr(original_attn, 'add_v_proj') or original_attn.add_v_proj is None:
                     original_attn.add_v_proj = nn.Linear(dim, dim).to(dtype=target_dtype, device=target_device)
@@ -621,6 +657,9 @@ class T2VModel2I2VModelConverter:
                     # Ensure parameters require gradients
                     original_attn.add_v_proj.weight.requires_grad_(True)
                     original_attn.add_v_proj.bias.requires_grad_(True)
+                    
+                    # 记录新增的模块用于训练控制
+                    self._add_to_training_modules(original_attn.add_v_proj)
                 
                 # Add norm_added_k (check if original has qk_norm) if not already present
                 if not hasattr(original_attn, 'norm_added_k') or original_attn.norm_added_k is None:
@@ -633,6 +672,9 @@ class T2VModel2I2VModelConverter:
                             nn.init.ones_(original_attn.norm_added_k.weight)
                         # Ensure parameters require gradients
                         original_attn.norm_added_k.weight.requires_grad_(True)
+                        
+                        # 记录新增的模块用于训练控制
+                        self._add_to_training_modules(original_attn.norm_added_k)
                     else:
                         original_attn.norm_added_k = nn.Identity()
 
