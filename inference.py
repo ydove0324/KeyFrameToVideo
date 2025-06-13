@@ -11,10 +11,12 @@ from typing import Optional, Union, List
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 import numpy as np
 import decord
+from finetrainers.processors import ProcessorMixin, T5Processor
 
 # Available models: Wan-AI/Wan2.1-T2V-14B-Diffusers, Wan-AI/Wan2.1-T2V-1.3B-Diffusers
 model_id = "/share/project/huangxu/Wan2.1-T2V-1.3B-diffusers"
-transformer_path = "/share/project/huangxu/wan-t2v-overfit-debug-intern-video-clips/model_weights/002000"
+# transformer_path = "/share/project/huangxu/wan-t2v-debug-intern-video-clips/model_weights/007500"
+transformer_path = "/share/project/huangxu/wan-t2v-full-finetune-overfit-test/model_weights/001000"
 
 
 # Load models
@@ -28,6 +30,7 @@ vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=to
 # Load text encoder and tokenizer
 text_encoder = UMT5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16)
 tokenizer = AutoTokenizer.from_pretrained(model_id, subfolder="tokenizer")
+condition_model_processor = T5Processor(["encoder_hidden_states", "__drop__"])
 
 # Load image encoder (required for first/last frame conditioning)
 image_encoder = CLIPVisionModel.from_pretrained(model_id, subfolder="image_encoder", torch_dtype=torch.bfloat16)
@@ -70,26 +73,39 @@ def normalize_latents(
     latents = ((latents.float() - latents_mean) * latents_std).to(latents)
     return latents
 
+def denormalize_latents(
+        latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor
+    ) -> torch.Tensor:
+    """Reverse the normalization applied to latents"""
+    latents_mean = latents_mean.view(1, -1, 1, 1, 1).to(device=latents.device)
+    latents_std = latents_std.view(1, -1, 1, 1, 1).to(device=latents.device)
+    latents = ((latents.float() / latents_std) + latents_mean).to(latents)
+    return latents
 
-def encode_text(prompt: str, tokenizer, text_encoder, max_length: int = 512):
-    """Encode text prompt using T5 encoder"""
+def encode_text(caption: str, tokenizer, text_encoder, max_length: int = 512):
+    if isinstance(caption, str):
+        caption = [caption]
+
+    device = text_encoder.device
+    dtype = text_encoder.dtype
+
+    batch_size = len(caption)
     text_inputs = tokenizer(
-        prompt,
+        caption,
         padding="max_length",
         max_length=max_length,
         truncation=True,
         add_special_tokens=True,
         return_tensors="pt",
     )
-    
-    with torch.no_grad():
-        text_embeddings = text_encoder(
-            input_ids=text_inputs.input_ids.to(device),
-            attention_mask=text_inputs.attention_mask.to(device),
-        )[0]
-    
-    return text_embeddings
+    text_input_ids = text_inputs.input_ids
+    prompt_attention_mask = text_inputs.attention_mask
+    prompt_attention_mask = prompt_attention_mask.bool().to(device)
 
+    prompt_embeds = text_encoder(text_input_ids.to(device))[0]
+    prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+    prompt_attention_mask = prompt_attention_mask.view(batch_size, -1)
+    return prompt_embeds
 
 def encode_first_last_frame(first_image: PIL.Image.Image, last_image: PIL.Image.Image, image_encoder, image_processor):
     """Encode first and last frame using CLIP vision encoder"""
@@ -256,7 +272,9 @@ def manual_inference(
             pred = transformer(**transformer_inputs)[0]
             if i == 0:
                 x_0 = noise - pred
-                video = vae.decode(x_0).sample
+                # Denormalize before decoding
+                x_0_denorm = denormalize_latents(x_0, latents_mean, latents_std)
+                video = vae.decode(x_0_denorm).sample
                 output_frames = postprocess(video)
                 export_to_video(output_frames, "debug_output.mp4", fps=16)
         
@@ -266,7 +284,9 @@ def manual_inference(
     print("Decoding latents to video...")
     # Decode latents to video
     with torch.no_grad():
-        video = vae.decode(latents).sample
+        # Denormalize before decoding
+        latents_denorm = denormalize_latents(latents, latents_mean, latents_std)
+        video = vae.decode(latents_denorm).sample
     
     return postprocess(video)
 
@@ -276,6 +296,7 @@ if __name__ == "__main__":
     prompt = ""
     
     # Load first and last frame images
+    # video_path = "pexel/a39e78046826c99432173630feec2456fe87ca43.mp4"
     video_path = "validate_video/0CWZMaN4uAE_s006.mp4"
     video_tensor = load_video_as_tensor(video_path, height=480, width=832)
     first_frame = tensor_to_pil(video_tensor[0])
