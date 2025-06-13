@@ -18,7 +18,8 @@ class IterableVideoSegmentDataset(torch.utils.data.IterableDataset, torch.distri
     The dataset splits videos from head to tail and discards remaining frames 
     that cannot form a complete segment.
     
-    Supports distributed training by automatically sharding data across ranks.
+    Note: This dataset assumes the base_dataset is already properly distributed
+    across ranks and does not perform additional distributed sharding.
     """
 
     def __init__(
@@ -51,25 +52,14 @@ class IterableVideoSegmentDataset(torch.utils.data.IterableDataset, torch.distri
     def __iter__(self) -> Iterator[Dict[str, Any]]:
         """
         Iterate through the dataset, yielding video segments.
-        Supports distributed training by sharding based on rank.
+        The base_dataset is already distributed, so no additional sharding needed.
         """
-        # Get distributed info
-        world_size = 1
-        rank = 0
-        if torch.distributed.is_initialized():
-            world_size = torch.distributed.get_world_size()
-            rank = torch.distributed.get_rank()
-        
-        segment_count = 0
         for data in self.base_dataset:
-            # Process each video and yield segments
+            # Process each video and yield all segments from this data item
             segments = self._segment_video_data(data)
             for segment in segments:
-                # Distributed sharding: only yield segments assigned to this rank
-                if segment_count % world_size == rank:
-                    self._sample_index += 1
-                    yield segment
-                segment_count += 1
+                self._sample_index += 1
+                yield segment
 
     def _segment_video_data(self, data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
         """
