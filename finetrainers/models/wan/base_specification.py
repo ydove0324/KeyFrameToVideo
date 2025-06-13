@@ -254,6 +254,18 @@ class WanImageEncodeProcessor(ProcessorMixin):
         
 
 class WanModelSpecification(ModelSpecification):
+    """
+    Wan模型规范类,用于处理Wan T2V到I2V模型的转换和训练。
+    
+    Args:
+        train_added_modules_only (bool, optional): 是否只训练新增的模块。默认为True。
+            - 当设置为True时,原始T2V模型的所有参数将被冻结,只有新增的I2V模块参数可训练
+            - 当设置为False时,所有模块参数都可训练
+            - 新增的模块包括：
+                * 修改后的patch_embedding(输入通道数从16增加到36)
+                * condition_embedder中的image_embedder
+                * 所有transformer block中的add_k_proj、add_v_proj和norm_added_k
+    """
     def __init__(
         self,
         pretrained_model_name_or_path: str = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
@@ -268,6 +280,7 @@ class WanModelSpecification(ModelSpecification):
         cache_dir: Optional[str] = None,
         condition_model_processors: List[ProcessorMixin] = None,
         latent_model_processors: List[ProcessorMixin] = None,
+        train_added_modules_only: bool = False,
         **kwargs,
     ) -> None:  # 在一开始的时候把 Conv3D 添加一层，然后再看看 cross-attn 在哪加入
         super().__init__(
@@ -303,6 +316,7 @@ class WanModelSpecification(ModelSpecification):
 
         self.condition_model_processors = condition_model_processors
         self.latent_model_processors = latent_model_processors
+        self.train_added_modules_only = train_added_modules_only
 
     def _mock_transformer_config(self):
         '''
@@ -380,14 +394,30 @@ class WanModelSpecification(ModelSpecification):
                 **common_kwargs,
             )
         # TODO: mock transformer_config, 搞清楚 pos_embed 有什么用，怎么用在 last_first_frame 上, 搞清楚怎么加载数据,要把 CLIP 这些下载下来,放在对应的文件夹里,然后就可以开始训练了
-        transformer.requires_grad_(False)   # 先只在新增的模块上训练
         from finetrainers.models.wan.transformer_wan import T2VModel2I2VModelConverter
-        converter = T2VModel2I2VModelConverter(transformer, image_dim=1280, in_channels=36, transformer_config=self.transformer_config)
+        converter = T2VModel2I2VModelConverter(
+            transformer, 
+            image_dim=1280, 
+            in_channels=36, 
+            transformer_config=self.transformer_config,
+            train_added_modules_only=self.train_added_modules_only  # 传递训练控制参数
+        )
         converter.convert()
+        
+        # 保存converter引用以便后续获取新增模块信息
+        self.converter = converter
+        if not self.train_added_modules_only:
+            transformer.requires_grad_(True)
+        
         scheduler = FlowMatchEulerDiscreteScheduler()
 
         return {"transformer": transformer, "scheduler": scheduler}
 
+    def get_added_modules(self):
+        """获取所有新增的模块列表，仅在converter存在时有效"""
+        if hasattr(self, 'converter') and self.converter is not None:
+            return self.converter.get_added_modules()
+        return []
 
     def load_pipeline(
         self,
@@ -695,3 +725,4 @@ class WanModelSpecification(ModelSpecification):
         latents_std = latents_std.view(1, -1, 1, 1, 1).to(device=latents.device)
         latents = ((latents.float() - latents_mean) * latents_std).to(latents)
         return latents
+

@@ -252,7 +252,7 @@ class ModelSpecification:
         if self.transformer_id is not None:
             transformer_cls = resolve_component_cls(
                 self.transformer_id,
-                component_name="_class_name",
+                component_name="transformer",   # mock 过的,需要修改 config.json,添加  "transformer": ["diffusers","WanTransformer3DModel"],
                 filename="config.json",
                 revision=self.revision,
                 cache_dir=self.cache_dir,

@@ -6,6 +6,7 @@ set -e -x
 # export TORCHDYNAMO_VERBOSE=1
 export WANDB_MODE="online"
 export NCCL_P2P_DISABLE=1
+export NCCL_IB_DISABLE=1
 export TORCH_NCCL_ENABLE_MONITORING=0
 export FINETRAINERS_LOG_LEVEL="DEBUG"
 
@@ -18,8 +19,8 @@ NUM_GPUS=4
 CUDA_VISIBLE_DEVICES="0,1,2,3"
 
 # Check the JSON files for the expected JSON format
-TRAINING_DATASET_CONFIG="examples/training/sft/wan/pexel/training.json"
-VALIDATION_DATASET_FILE="examples/training/sft/wan/pexel/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/sft/wan/overfit-test/training.json"
+VALIDATION_DATASET_FILE="examples/training/sft/wan/overfit-test/validation.json"
 
 # Depending on how many GPUs you have available, choose your degree of parallelism and technique!
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -71,21 +72,20 @@ diffusion_cmd=(
 training_cmd=(
   --training_type "full-finetune"
   --seed 42
-  --batch_size 4
-  --train_steps 10000
+  --batch_size 2
+  --train_steps 2000
 #   --rank 32
 #   --lora_alpha 32
 #   --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
-  --enable_video_segmentation
-  --frames_per_segment 17
-  --overlap_frames 1
+  # --enable_video_segmentation
+  # --frames_per_segment 17
+  # --overlap_frames 1
   --gradient_accumulation_steps 1
   --gradient_checkpointing
   --checkpointing_steps 1000
-  --checkpointing_limit 2
-  --resume_from_checkpoint 7500
   --enable_slicing
   --enable_tiling
+  --transformer_id "/share/project/huangxu/wan-t2v-overfit-debug-intern-video-clips/model_weights/002000/transformer"
   # --enable_precomputation
   # --precomputation_items 128
   # --enable_precomputation_reuse
@@ -95,9 +95,9 @@ training_cmd=(
 # Optimizer arguments
 optimizer_cmd=(
   --optimizer "adamw"
-  --lr 1e-4
+  --lr 5e-5
   --lr_scheduler "constant_with_warmup"
-  --lr_warmup_steps 750
+  --lr_warmup_steps 500
   --lr_num_cycles 1
   --beta1 0.9
   --beta2 0.99
@@ -115,7 +115,7 @@ validation_cmd=(
 # Miscellaneous arguments
 miscellaneous_cmd=(
   --tracker_name "finetrainers-wan-t2v-debug-pexel"
-  --output_dir "/share/project/huangxu/wan-t2v-debug-intern-video-clips"
+  --output_dir "/share/project/huangxu/wan-t2v-full-finetune-overfit-test"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"

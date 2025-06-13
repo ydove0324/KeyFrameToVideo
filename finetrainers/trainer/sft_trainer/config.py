@@ -144,3 +144,36 @@ class SFTVideoSegmentConfig(ArgsConfigMixin):
             "frames_per_segment": self.frames_per_segment,
             "overlap_frames": self.overlap_frames,
         }
+
+
+class WanModelConfig(ArgsConfigMixin):
+    r"""
+    Configuration class for Wan model-specific training parameters.
+    
+    Args:
+        train_added_modules_only (bool):
+            Whether to train only the newly added modules for I2V conversion.
+            When True, only trains the added modules (patch_embedding modifications,
+            image_embedder, add_k_proj, add_v_proj, norm_added_k).
+            When False, trains all model parameters.
+    """
+
+    train_added_modules_only: bool = False
+
+    def add_args(self, parser: argparse.ArgumentParser):
+        parser.add_argument("--train_added_modules_only", action="store_true", default=False,
+                          help="Train only the newly added modules for I2V conversion (default: False)")
+        parser.add_argument("--no_train_added_modules_only", dest="train_added_modules_only", 
+                          action="store_false",
+                          help="Train all model parameters instead of just added modules")
+
+    def validate_args(self, args: "BaseArgs"):
+        pass  # No validation needed for boolean parameter
+
+    def map_args(self, argparse_args: argparse.Namespace, mapped_args: "BaseArgs"):
+        mapped_args.train_added_modules_only = argparse_args.train_added_modules_only
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "train_added_modules_only": self.train_added_modules_only,
+        }

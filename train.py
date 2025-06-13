@@ -4,7 +4,7 @@ import traceback
 from finetrainers import BaseArgs, ControlTrainer, SFTTrainer, TrainingType, get_logger
 from finetrainers.config import _get_model_specifiction_cls
 from finetrainers.trainer.control_trainer.config import ControlFullRankConfig, ControlLowRankConfig
-from finetrainers.trainer.sft_trainer.config import SFTFullRankConfig, SFTLowRankConfig, SFTVideoSegmentConfig
+from finetrainers.trainer.sft_trainer.config import SFTFullRankConfig, SFTLowRankConfig, SFTVideoSegmentConfig, WanModelConfig
 import torch
 
 logger = get_logger()
@@ -31,6 +31,16 @@ def main():
             raise ValueError("Training type not provided in command line arguments.")
 
         training_type = argv[training_type_index + 1]
+        
+        # Get model name from command line arguments to determine if we need Wan-specific config
+        model_name = None
+        try:
+            model_name_index = argv.index("--model_name")
+            if model_name_index != -1 and model_name_index + 1 < len(argv):
+                model_name = argv[model_name_index + 1]
+        except ValueError:
+            pass  # model_name not found in argv, will be handled by argument parser
+        
         training_cls = None
         if training_type == TrainingType.LORA:
             training_cls = SFTLowRankConfig
@@ -48,6 +58,11 @@ def main():
         # Always register video segmentation config for SFT trainers
         if training_type in [TrainingType.LORA, TrainingType.FULL_FINETUNE]:
             args.register_args(SFTVideoSegmentConfig())
+        
+        # Register Wan model config when training Wan models
+        if model_name == 'wan':
+            args.register_args(WanModelConfig())
+        
         args = args.parse_args()
 
         model_specification_cls = _get_model_specifiction_cls(args.model_name, args.training_type)
@@ -68,6 +83,7 @@ def main():
             vae_dtype=args.vae_dtype,
             revision=args.revision,
             cache_dir=args.cache_dir,
+            train_added_modules_only=args.train_added_modules_only,
         )
 
         if args.training_type in [TrainingType.LORA, TrainingType.FULL_FINETUNE]:

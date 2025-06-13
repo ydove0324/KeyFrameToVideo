@@ -475,6 +475,9 @@ class BaseArgs:
     # Attention provider arguments
     attention_provider_args: AttentionProviderArgs = AttentionProviderArgs()
 
+    # Model-specific arguments
+    train_added_modules_only: bool = False
+
     _registered_config_mixins: List[ArgsConfigMixin] = []
     _arg_group_map: Dict[str, ArgsConfigMixin] = {}
 
