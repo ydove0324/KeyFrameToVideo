@@ -1,7 +1,7 @@
 import argparse
 import os
 import pathlib
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Generator
 import numpy as np
 import torch
 import cv2
@@ -11,6 +11,9 @@ import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from functools import partial
+import queue
+import time
+from threading import Event
 
 import decord
 decord.bridge.set_bridge("torch")
@@ -106,29 +109,28 @@ def resize_clip_temporal(clip: torch.Tensor, target_frames: int = 17) -> torch.T
     resized_clip = torch.stack(resized_frames, dim=0)
     return resized_clip.to(torch.uint8)
 
-def extract_video_clips(video_path: str, target_clip_length: int = 17, overlap: int = 1, device: str = "cpu") -> List[torch.Tensor]:
+def extract_video_clips_generator(video_path: str, target_clip_length: int = 17, overlap: int = 1) -> Generator[Tuple[int, torch.Tensor], None, None]:
     """
-    Extract video clips by reading 1 second of original video and resize to target_clip_length frames
+    🚀 Generator版本：逐个生成clips而不是一次性加载所有clips到内存
     Args:
         video_path: path to video file
         target_clip_length: target number of frames per clip after resizing
         overlap: number of overlapping frames between adjacent clips (in terms of seconds)
-        device: "cpu" or "cuda"
-    Returns:
-        list of video clips, each clip is torch.Tensor of shape (target_clip_length, H, W, C)
+    Yields:
+        (clip_index, clip): 每次yield一个clip
     """
     try:
-        vr = decord.VideoReader(video_path, num_threads=128)
+        vr = decord.VideoReader(video_path)
         total_frames = len(vr)
         original_fps = vr.get_avg_fps()
         
         # Calculate frames per second (1 second clip length in original video)
         frames_per_second = int(round(original_fps))
         
-        print(f"Video FPS: {original_fps:.2f}, using {frames_per_second} frames per 1-second clip")
+        print(f"📹 Video FPS: {original_fps:.2f}, using {frames_per_second} frames per 1-second clip")
         
         if total_frames < frames_per_second:
-            print(f"Warning: Video {video_path} has only {total_frames} frames, less than 1 second ({frames_per_second} frames)")
+            print(f"⚠️  Video {video_path} has only {total_frames} frames, less than 1 second ({frames_per_second} frames)")
             # If video is too short, use all frames and resize to target length
             all_frames = vr.get_batch(list(range(total_frames)))
             # Convert to torch.Tensor if needed
@@ -137,16 +139,19 @@ def extract_video_clips(video_path: str, target_clip_length: int = 17, overlap: 
             
             # Resize temporal dimension to target_clip_length
             resized_clip = resize_clip_temporal(all_frames, target_clip_length)
-            return [resized_clip]
+            yield 0, resized_clip
+            return
         
-        clips = []
         # Calculate overlap in frames (overlap is in seconds, convert to frames)
         overlap_frames = int(overlap * frames_per_second)
         step = frames_per_second - overlap_frames
         
+        clip_index = 0
         for start_idx in range(0, total_frames - frames_per_second + 1, step):
             end_idx = start_idx + frames_per_second
             frame_indices = list(range(start_idx, end_idx))
+            
+            # 🚀 关键优化：每次只读取一个clip，立即yield
             clip = vr.get_batch(frame_indices)
             # Convert to torch.Tensor if needed
             if not isinstance(clip, torch.Tensor):
@@ -154,10 +159,11 @@ def extract_video_clips(video_path: str, target_clip_length: int = 17, overlap: 
             
             # Resize temporal dimension to target_clip_length
             resized_clip = resize_clip_temporal(clip, target_clip_length)
-            clips.append(resized_clip)
+            yield clip_index, resized_clip
+            clip_index += 1
         
         # Handle the last clip if there are remaining frames
-        remaining_frames = total_frames - (len(clips) * step)
+        remaining_frames = total_frames - (clip_index * step)
         if remaining_frames >= frames_per_second // 2:  # If at least half a second remains
             start_idx = total_frames - frames_per_second
             if start_idx < 0:
@@ -170,13 +176,11 @@ def extract_video_clips(video_path: str, target_clip_length: int = 17, overlap: 
             
             # Resize temporal dimension to target_clip_length
             resized_clip = resize_clip_temporal(clip, target_clip_length)
-            clips.append(resized_clip)
+            yield clip_index, resized_clip
             
-        return clips
-        
     except Exception as e:
-        print(f"Error processing video {video_path}: {str(e)}")
-        return []
+        print(f"❌ Error processing video {video_path}: {str(e)}")
+        return
 
 def save_video_clip(clip: Union[torch.Tensor, np.ndarray], output_path: str, fps: int = 25):
     """
@@ -206,6 +210,185 @@ def save_video_clip(clip: Union[torch.Tensor, np.ndarray], output_path: str, fps
         out.write(frame_bgr)
     
     out.release()
+
+class AsyncVideoProcessor:
+    """
+    🚀 异步视频处理器：实现读取→处理→保存的流水线并行
+    """
+    def __init__(self, 
+                 read_queue_size: int = 5,
+                 process_queue_size: int = 10,
+                 num_process_workers: int = None,
+                 num_save_workers: int = 2):
+        """
+        Args:
+            read_queue_size: 读取队列大小（控制内存使用）
+            process_queue_size: 处理队列大小
+            num_process_workers: 处理工作线程数
+            num_save_workers: 保存工作线程数
+        """
+        self.read_queue = queue.Queue(maxsize=read_queue_size)
+        self.process_queue = queue.Queue(maxsize=process_queue_size)
+        
+        if num_process_workers is None:
+            num_process_workers = min(multiprocessing.cpu_count(), 4)
+        
+        self.num_process_workers = num_process_workers
+        self.num_save_workers = num_save_workers
+        
+        self.stop_event = Event()
+        self.stats = {
+            'clips_read': 0,
+            'clips_processed': 0,
+            'clips_saved': 0,
+            'read_time': 0,
+            'process_time': 0,
+            'save_time': 0
+        }
+        
+    def reader_worker(self, video_path: str, target_clip_length: int, overlap: int):
+        """读取工作线程：负责从视频中读取clips"""
+        try:
+            start_time = time.time()
+            for clip_index, clip in extract_video_clips_generator(video_path, target_clip_length, overlap):
+                if self.stop_event.is_set():
+                    break
+                    
+                self.read_queue.put((clip_index, clip))
+                self.stats['clips_read'] += 1
+                
+            # 发送结束信号
+            self.read_queue.put(None)
+            self.stats['read_time'] = time.time() - start_time
+            print(f"📖 Reader finished: {self.stats['clips_read']} clips read in {self.stats['read_time']:.2f}s")
+            
+        except Exception as e:
+            print(f"❌ Reader error: {str(e)}")
+            self.read_queue.put(None)
+    
+    def processor_worker(self, resolution: Tuple[int, int], device: str, use_torch: bool):
+        """处理工作线程：负责resize clips"""
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    item = self.read_queue.get(timeout=1)
+                    if item is None:  # 结束信号
+                        self.process_queue.put(None)
+                        break
+                        
+                    clip_index, clip = item
+                    
+                    start_time = time.time()
+                    # 处理clip
+                    processed_clip = resize_video_frames(clip, resolution, device, use_torch)
+                    process_time = time.time() - start_time
+                    
+                    self.process_queue.put((clip_index, processed_clip))
+                    self.stats['clips_processed'] += 1
+                    self.stats['process_time'] += process_time
+                    
+                except queue.Empty:
+                    continue
+                    
+        except Exception as e:
+            print(f"❌ Processor error: {str(e)}")
+            self.process_queue.put(None)
+    
+    def saver_worker(self, output_dir: str, video_name: str, resolution_name: str, fps: int):
+        """保存工作线程：负责保存processed clips"""
+        try:
+            resolution_dir = os.path.join(output_dir, resolution_name, video_name)
+            
+            while not self.stop_event.is_set():
+                try:
+                    item = self.process_queue.get(timeout=1)
+                    if item is None:  # 结束信号
+                        break
+                        
+                    clip_index, processed_clip = item
+                    
+                    start_time = time.time()
+                    # 保存clip
+                    output_path = os.path.join(resolution_dir, f"clip_{clip_index:04d}.mp4")
+                    save_video_clip(processed_clip, output_path, fps)
+                    save_time = time.time() - start_time
+                    
+                    self.stats['clips_saved'] += 1
+                    self.stats['save_time'] += save_time
+                    
+                except queue.Empty:
+                    continue
+                    
+        except Exception as e:
+            print(f"❌ Saver error: {str(e)}")
+    
+    def process_video_async(self, 
+                          video_path: str,
+                          output_dir: str,
+                          resolution: Tuple[int, int],
+                          video_name: str,
+                          resolution_name: str,
+                          clip_length: int = 17,
+                          overlap: int = 0,
+                          fps: int = 25,
+                          device: str = "cpu",
+                          use_torch: bool = False):
+        """
+        🚀 异步处理单个视频：读取、处理、保存并行进行
+        """
+        print(f"🚀 Starting async processing: {video_name}")
+        print(f"   📊 Pipeline: Reader(1) -> Processors({self.num_process_workers}) -> Savers({self.num_save_workers})")
+        
+        # 重置统计
+        self.stats = {key: 0 for key in self.stats}
+        self.stop_event.clear()
+        
+        # 启动线程
+        with ThreadPoolExecutor(max_workers=1 + self.num_process_workers + self.num_save_workers) as executor:
+            # 启动读取线程
+            reader_future = executor.submit(
+                self.reader_worker, video_path, clip_length, overlap
+            )
+            
+            # 启动处理线程
+            processor_futures = []
+            for _ in range(self.num_process_workers):
+                future = executor.submit(
+                    self.processor_worker, resolution, device, use_torch
+                )
+                processor_futures.append(future)
+            
+            # 启动保存线程
+            saver_futures = []
+            for _ in range(self.num_save_workers):
+                future = executor.submit(
+                    self.saver_worker, output_dir, video_name, resolution_name, fps
+                )
+                saver_futures.append(future)
+            
+            # 等待所有线程完成
+            try:
+                reader_future.result()
+                for future in processor_futures:
+                    future.result()
+                for future in saver_futures:
+                    future.result()
+                    
+            except Exception as e:
+                print(f"❌ Error in async processing: {str(e)}")
+                self.stop_event.set()
+        
+        # 打印统计信息
+        total_time = max(self.stats['read_time'], self.stats['process_time'], self.stats['save_time'])
+        print(f"📊 Processing Stats for {video_name}:")
+        print(f"   📖 Read: {self.stats['clips_read']} clips in {self.stats['read_time']:.2f}s")
+        print(f"   🔄 Process: {self.stats['clips_processed']} clips in {self.stats['process_time']:.2f}s")
+        print(f"   💾 Save: {self.stats['clips_saved']} clips in {self.stats['save_time']:.2f}s")
+        print(f"   ⏱️  Total pipeline time: {total_time:.2f}s")
+        
+        if self.stats['clips_processed'] > 0:
+            avg_process_time = self.stats['process_time'] / self.stats['clips_processed']
+            print(f"   📈 Avg processing time per clip: {avg_process_time:.3f}s")
 
 def get_device_info():
     """Get available device information"""
@@ -276,46 +459,7 @@ def choose_best_resolution(original_size: Tuple[int, int], candidate_resolutions
     
     return best_resolution
 
-def process_single_clip_resize(args):
-    """Helper function for multiprocessing clip resizing"""
-    clip, resolution, device, use_torch = args
-    return resize_video_frames(clip, resolution, device, use_torch)
-
-def process_clips_multithread(clips: List[torch.Tensor], 
-                            resolution: Tuple[int, int], 
-                            device: str = "cpu", 
-                            use_torch: bool = False, 
-                            num_workers: int = None) -> List[torch.Tensor]:
-    """Process multiple clips with multithreading"""
-    if num_workers is None:
-        num_workers = min(len(clips), multiprocessing.cpu_count())
-    
-    if num_workers == 1 or len(clips) == 1:
-        # Single-threaded processing
-        return [resize_video_frames(clip, resolution, device, use_torch) for clip in clips]
-    
-    # Multi-threaded processing
-    resized_clips = [None] * len(clips)
-    
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        # Submit all tasks
-        future_to_index = {
-            executor.submit(resize_video_frames, clip, resolution, device, use_torch): i 
-            for i, clip in enumerate(clips)
-        }
-        
-        # Collect results
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            try:
-                resized_clips[index] = future.result()
-            except Exception as e:
-                print(f"Error processing clip {index}: {str(e)}")
-                resized_clips[index] = clips[index]  # Use original clip as fallback
-    
-    return resized_clips
-
-def preprocess_video_file(
+def preprocess_video_file_async(
     video_path: str,
     output_dir: str,
     target_resolutions: List[Tuple[int, int]],
@@ -324,10 +468,13 @@ def preprocess_video_file(
     fps: int = 25,
     device: str = "auto",
     use_torch: bool = False,
-    num_workers: int = None
+    read_queue_size: int = 5,
+    process_queue_size: int = 10,
+    num_process_workers: int = None,
+    num_save_workers: int = 2
 ):
     """
-    Preprocess a single video file
+    🚀 异步预处理单个视频文件
     Args:
         video_path: path to input video
         output_dir: output directory
@@ -337,7 +484,10 @@ def preprocess_video_file(
         fps: output fps
         device: "cpu", "cuda", or "auto" for automatic detection
         use_torch: whether to use torch operations for resizing (GPU-friendly)
-        num_workers: number of worker threads for parallel processing
+        read_queue_size: 读取队列大小（控制内存使用）
+        process_queue_size: 处理队列大小
+        num_process_workers: 处理工作线程数
+        num_save_workers: 保存工作线程数
     """
     video_name = pathlib.Path(video_path).stem
     
@@ -348,19 +498,14 @@ def preprocess_video_file(
         print("⚠️  CUDA requested but not available, falling back to CPU")
         device = "cpu"
     
-    # Set default num_workers based on device
-    if num_workers is None:
-        if device == "cuda":
-            num_workers = 2  # Conservative for GPU to avoid memory issues
-        else:
-            num_workers = min(multiprocessing.cpu_count(), 8)  # Limit to avoid too many threads
-    
     print(f"🎬 Processing video: {video_path}")
-    print(f"⚙️  Device: {device.upper()}, Workers: {num_workers}, Torch resize: {use_torch}")
+    print(f"⚙️  Device: {device.upper()}, Use torch: {use_torch}")
+    print(f"🔧 Queue sizes: Read({read_queue_size}), Process({process_queue_size})")
+    print(f"👥 Workers: Process({num_process_workers or 'auto'}), Save({num_save_workers})")
     
     # Get original video resolution
     try:
-        vr = decord.VideoReader(video_path, num_threads=128)
+        vr = decord.VideoReader(video_path)
         original_height, original_width = vr[0].shape[:2]
         original_size = (original_height, original_width)
         print(f"📐 Original resolution: {original_width}x{original_height}")
@@ -373,47 +518,47 @@ def preprocess_video_file(
     resolution_name = get_resolution_name(best_resolution)
     print(f"🎯 Selected best matching resolution: {resolution_name} {best_resolution}")
     
-    # Extract clips
-    clips = extract_video_clips(video_path, target_clip_length=clip_length, overlap=overlap, device=device)
+    # 创建异步处理器
+    processor = AsyncVideoProcessor(
+        read_queue_size=read_queue_size,
+        process_queue_size=process_queue_size,
+        num_process_workers=num_process_workers,
+        num_save_workers=num_save_workers
+    )
     
-    if not clips:
-        print(f"❌ No clips extracted from {video_path}")
-        return
-    
-    print(f"✂️  Extracted {len(clips)} clips from {video_name}")
-    
-    # Process the selected resolution
-    resolution = best_resolution
-    resolution_name = get_resolution_name(resolution)
-    resolution_dir = os.path.join(output_dir, resolution_name, video_name)
-    
-    print(f"🔄 Processing resolution {resolution_name} with {num_workers} workers...")
-    
-    # Multi-threaded clip resizing
-    with tqdm(total=len(clips), desc=f"Resizing clips for {resolution_name}") as pbar:
-        resized_clips = process_clips_multithread(
-            clips, resolution, device, use_torch, num_workers
-        )
-        pbar.update(len(clips))
-    
-    # Save clips
-    print(f"💾 Saving {len(resized_clips)} clips...")
-    for i, resized_clip in enumerate(tqdm(resized_clips, desc=f"Saving clips for {resolution_name}")):
-        output_path = os.path.join(resolution_dir, f"clip_{i:04d}.mp4")
-        save_video_clip(resized_clip, output_path, fps)
+    # 异步处理视频
+    processor.process_video_async(
+        video_path=video_path,
+        output_dir=output_dir,
+        resolution=best_resolution,
+        video_name=video_name,
+        resolution_name=resolution_name,
+        clip_length=clip_length,
+        overlap=overlap,
+        fps=fps,
+        device=device,
+        use_torch=use_torch
+    )
     
     # Save metadata
+    resolution_dir = os.path.join(output_dir, resolution_name, video_name)
     metadata = {
         "original_video": video_path,
         "original_resolution": original_size,
         "clip_length": clip_length,
         "overlap": overlap,
-        "target_resolution": resolution,
-        "num_clips": len(clips),
+        "target_resolution": best_resolution,
+        "num_clips": processor.stats['clips_saved'],
         "fps": fps,
         "device": device,
         "use_torch": use_torch,
-        "num_workers": num_workers
+        "async_config": {
+            "read_queue_size": read_queue_size,
+            "process_queue_size": process_queue_size,
+            "num_process_workers": processor.num_process_workers,
+            "num_save_workers": num_save_workers
+        },
+        "performance_stats": processor.stats
     }
     metadata_path = os.path.join(resolution_dir, "metadata.json")
     with open(metadata_path, 'w') as f:
@@ -421,7 +566,7 @@ def preprocess_video_file(
     
     print(f"✅ Completed {resolution_name} - saved to {resolution_dir}")
 
-def preprocess_videos(
+def preprocess_videos_async(
     input_dir: str,
     output_dir: str,
     target_resolutions: List[Tuple[int, int]] = None,
@@ -431,11 +576,14 @@ def preprocess_videos(
     video_extensions: List[str] = None,
     device: str = "auto",
     use_torch: bool = False,
-    num_workers: int = None,
-    max_concurrent_videos: int = 1
+    read_queue_size: int = 5,
+    process_queue_size: int = 10,
+    num_process_workers: int = None,
+    num_save_workers: int = 2,
+    max_concurrent_videos: int = 2
 ):
     """
-    Preprocess all videos in a directory
+    🚀 异步预处理目录中的所有视频文件 - 支持多视频并行处理
     Args:
         input_dir: input directory containing videos
         output_dir: output directory
@@ -446,8 +594,11 @@ def preprocess_videos(
         video_extensions: supported video file extensions
         device: "cpu", "cuda", or "auto" for automatic detection
         use_torch: whether to use torch operations for resizing (GPU-friendly)
-        num_workers: number of worker threads for parallel processing per video
-        max_concurrent_videos: maximum number of videos to process simultaneously
+        read_queue_size: 读取队列大小（控制内存使用）
+        process_queue_size: 处理队列大小
+        num_process_workers: 处理工作线程数
+        num_save_workers: 保存工作线程数
+        max_concurrent_videos: 最大并行处理的视频数量
     """
     if target_resolutions is None:
         target_resolutions = [
@@ -470,13 +621,25 @@ def preprocess_videos(
         video_files.extend(input_path.rglob(f"*{ext.upper()}"))
     
     print(f"📁 Found {len(video_files)} video files")
-    print(f"🏭 Processing with max {max_concurrent_videos} concurrent videos")
+    print(f"🚀 Processing with max {max_concurrent_videos} concurrent videos")
+    print(f"📊 Each video pipeline: Reader(1) -> Processors({num_process_workers or 'auto'}) -> Savers({num_save_workers})")
+    
+    # Auto-detect device once
+    if device == "auto":
+        device = get_device_info()
+    elif device == "cuda" and not torch.cuda.is_available():
+        print("⚠️  CUDA requested but not available, falling back to CPU")
+        device = "cpu"
     
     # Process videos concurrently
-    def process_single_video(video_file):
+    def process_single_video_wrapper(video_file):
+        """包装函数用于并行处理单个视频"""
         try:
-            preprocess_video_file(
-                str(video_file),
+            video_path = str(video_file)
+            print(f"🎬 Starting video: {video_file.name}")
+            
+            preprocess_video_file_async(
+                video_path,
                 output_dir,
                 target_resolutions,
                 clip_length,
@@ -484,48 +647,79 @@ def preprocess_videos(
                 fps,
                 device,
                 use_torch,
-                num_workers
+                read_queue_size,
+                process_queue_size,
+                num_process_workers,
+                num_save_workers
             )
-            return str(video_file), True, None
+            
+            print(f"✅ Completed video: {video_file.name}")
+            return video_path, True, None
+            
         except Exception as e:
             error_msg = f"Error processing {video_file}: {str(e)}"
             print(f"❌ {error_msg}")
             return str(video_file), False, error_msg
     
+    # Track results
+    successful = 0
+    failed = 0
+    start_time = time.time()
+    
     if max_concurrent_videos == 1:
         # Sequential processing
-        for video_file in video_files:
-            process_single_video(video_file)
+        print("🔄 Sequential processing mode")
+        for video_file in tqdm(video_files, desc="Processing videos"):
+            video_path, success, error = process_single_video_wrapper(video_file)
+            if success:
+                successful += 1
+            else:
+                failed += 1
     else:
         # Concurrent processing
+        print(f"🚀 Concurrent processing mode ({max_concurrent_videos} videos in parallel)")
+        
         with ThreadPoolExecutor(max_workers=max_concurrent_videos) as executor:
             # Submit all video processing tasks
             future_to_video = {
-                executor.submit(process_single_video, video_file): video_file 
+                executor.submit(process_single_video_wrapper, video_file): video_file 
                 for video_file in video_files
             }
             
-            # Track results
-            successful = 0
-            failed = 0
-            
-            # Process completed tasks
-            for future in tqdm(as_completed(future_to_video), total=len(video_files), desc="Processing videos"):
-                video_file = future_to_video[future]
-                try:
-                    video_path, success, error = future.result()
-                    if success:
-                        successful += 1
-                    else:
+            # Process completed tasks with progress bar
+            with tqdm(total=len(video_files), desc="Processing videos") as pbar:
+                for future in as_completed(future_to_video):
+                    video_file = future_to_video[future]
+                    try:
+                        video_path, success, error = future.result()
+                        if success:
+                            successful += 1
+                        else:
+                            failed += 1
+                    except Exception as e:
+                        print(f"❌ Unexpected error with {video_file}: {str(e)}")
                         failed += 1
-                except Exception as e:
-                    print(f"❌ Unexpected error with {video_file}: {str(e)}")
-                    failed += 1
-            
-            print(f"\n📊 Processing complete: {successful} successful, {failed} failed")
+                    
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        'Success': successful, 
+                        'Failed': failed,
+                        'Active': len([f for f in future_to_video.keys() if not f.done()])
+                    })
+    
+    total_time = time.time() - start_time
+    
+    print(f"\n📊 Batch Processing Complete:")
+    print(f"   ✅ Successful: {successful}")
+    print(f"   ❌ Failed: {failed}")
+    print(f"   ⏱️  Total time: {total_time:.2f}s")
+    print(f"   📈 Average time per video: {total_time/len(video_files):.2f}s")
+    
+    if successful > 0:
+        print(f"   🚀 Effective throughput: {successful/(total_time/60):.1f} videos/minute")
 
 def main():
-    parser = argparse.ArgumentParser(description="Preprocess videos into clips with different resolutions (CPU/GPU + Multi-threading)")
+    parser = argparse.ArgumentParser(description="🚀 Async Video Preprocessing with Pipeline Parallelism")
     parser.add_argument("--input_dir", type=str, help="Input directory containing videos")
     parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
     parser.add_argument("--clip_length", type=int, default=17, help="Target number of frames per clip after temporal resizing")
@@ -538,10 +732,20 @@ def main():
                        help="Processing device: auto (detect), cpu, or cuda")
     parser.add_argument("--use_torch", action="store_true", 
                        help="Use torch operations for resizing (GPU-friendly, slower on CPU)")
-    parser.add_argument("--num_workers", type=int, default=None, 
-                       help="Number of worker threads for parallel clip processing")
-    parser.add_argument("--max_concurrent_videos", type=int, default=1, 
-                       help="Maximum number of videos to process simultaneously")
+    
+    # 🚀 Async-specific options
+    parser.add_argument("--read_queue_size", type=int, default=5, 
+                       help="Size of read queue (controls memory usage)")
+    parser.add_argument("--process_queue_size", type=int, default=10, 
+                       help="Size of process queue")
+    parser.add_argument("--num_process_workers", type=int, default=None, 
+                       help="Number of processing worker threads")
+    parser.add_argument("--num_save_workers", type=int, default=2, 
+                       help="Number of saving worker threads")
+    
+    # 🚀 Async-specific options
+    parser.add_argument("--max_concurrent_videos", type=int, default=2, 
+                       help="Maximum number of concurrent videos to process")
     
     args = parser.parse_args()
     
@@ -559,20 +763,23 @@ def main():
     ]
     
     # Print configuration
-    print("🚀 Video Preprocessing Configuration:")
+    print("🚀 Async Video Preprocessing Configuration:")
     print(f"   Device: {args.device}")
     print(f"   Use Torch: {args.use_torch}")
-    print(f"   Workers per video: {args.num_workers or 'auto'}")
-    print(f"   Max concurrent videos: {args.max_concurrent_videos}")
+    print(f"   Read Queue Size: {args.read_queue_size}")
+    print(f"   Process Queue Size: {args.process_queue_size}")
+    print(f"   Process Workers: {args.num_process_workers or 'auto'}")
+    print(f"   Save Workers: {args.num_save_workers}")
     print(f"   Target clip length: {args.clip_length} frames (after temporal resizing)")
     print(f"   Clip extraction: 1-second segments from original video")
     print(f"   Overlap: {args.overlap} seconds")
     print(f"   Output FPS: {args.fps}")
+    print(f"   Max Concurrent Videos: {args.max_concurrent_videos}")
     print()
 
     if args.single_video:
         # Process single video
-        preprocess_video_file(
+        preprocess_video_file_async(
             args.single_video,
             args.output_dir,
             target_resolutions,
@@ -581,11 +788,14 @@ def main():
             args.fps,
             args.device,
             args.use_torch,
-            args.num_workers
+            args.read_queue_size,
+            args.process_queue_size,
+            args.num_process_workers,
+            args.num_save_workers
         )
     else:
-        # Process directory
-        preprocess_videos(
+        # Process directory with async multi-video support
+        preprocess_videos_async(
             args.input_dir,
             args.output_dir,
             target_resolutions,
@@ -595,11 +805,14 @@ def main():
             video_extensions=None,
             device=args.device,
             use_torch=args.use_torch,
-            num_workers=args.num_workers,
+            read_queue_size=args.read_queue_size,
+            process_queue_size=args.process_queue_size,
+            num_process_workers=args.num_process_workers,
+            num_save_workers=args.num_save_workers,
             max_concurrent_videos=args.max_concurrent_videos
         )
     
-    print("🎉 Preprocessing completed!")
+    print("🎉 Async preprocessing completed!")
 
 if __name__ == "__main__":
-    main() 
+    main()

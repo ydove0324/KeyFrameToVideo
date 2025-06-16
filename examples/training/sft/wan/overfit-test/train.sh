@@ -15,8 +15,8 @@ export FINETRAINERS_LOG_LEVEL="DEBUG"
 BACKEND="ptd"
 
 # In this setting, I'm using 2 GPUs on a 4-GPU node for training
-NUM_GPUS=4
-CUDA_VISIBLE_DEVICES="0,1,2,3"
+NUM_GPUS=2
+CUDA_VISIBLE_DEVICES="0,1"
 
 # Check the JSON files for the expected JSON format
 TRAINING_DATASET_CONFIG="examples/training/sft/wan/overfit-test/training.json"
@@ -33,7 +33,7 @@ DDP_8="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 8 --dp_shards 1 --c
 
 # Parallel arguments
 parallel_cmd=(
-  $DDP_4
+  $DDP_2
 )
 
 # Model arguments
