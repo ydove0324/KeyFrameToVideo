@@ -1,6 +1,9 @@
 python tool/video_preprocess.py \
-    --input_dir pexel_part2_0 \
-    --output_dir /share/project/huangxu/video-data/pexel-clips \
-    --device auto \
-    --num_workers 128 \
-    --max_concurrent_videos 2
+    --input pexel_part2_1 \
+    --frames 17 \
+    --size auto \
+    --fps 17 \
+    --max-gpu-clips 6 \
+     --output /share/project/huangxu/video-data/pexel-clips-part2_1 \
+    --gpu 0,1,2,3
+   

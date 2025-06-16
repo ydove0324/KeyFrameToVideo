@@ -1,605 +1,217 @@
+#!/usr/bin/env python
+"""Multi‑GPU video slicer → fixed‑length clips (streaming, OOM‑safe)
+
+Key points
+~~~~~~~~~~
+* **Streaming decode** – never load more than `--max-gpu-frames` (default
+  `--max-gpu-clips × clip_len`) into a GPU at once. Safe for long videos /
+  limited VRAM.
+* **Multi‑GPU dispatch** – supply `--gpus 0,1,...`; videos round‑robin to GPUs.
+* **GPU‑batched spatial upscale/downscale** with `torch.nn.functional.interpolate`.
+* **Thread‑pool H.264 encoding** so I/O overlaps with GPU work.
+* **Auto‑resolution** & skip already‑processed videos.
+
+Example
+~~~~~~~
+```bash
+python video_preprocess_mgpu.py raw out \
+       --frames 17 --fps 25 --gpus 0,1 \
+       --max-gpu-clips 15 --threads 8    # ≤15×17=255 frames per GPU batch
+```
+"""
+from __future__ import annotations
+
 import argparse
+import glob
 import os
 import pathlib
-from typing import List, Tuple, Union
-import numpy as np
-import torch
-import cv2
-from tqdm import tqdm
-import json
-import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
-from functools import partial
+from itertools import cycle
+from typing import Tuple, List
 
+import torch
+import torch.nn.functional as F
+from torchvision.io import write_video
 import decord
+from tqdm import tqdm
+
 decord.bridge.set_bridge("torch")
 
-def resize_video_frames(frames: Union[torch.Tensor, np.ndarray], target_size: Tuple[int, int], device: str = "cpu", use_torch: bool = False) -> torch.Tensor:
-    """
-    Resize video frames to target size
-    Args:
-        frames: torch.Tensor or NDArray of shape (T, H, W, C)
-        target_size: (height, width)
-        device: "cpu" or "cuda"
-        use_torch: whether to use torch operations (GPU-friendly) or cv2 (CPU-optimized)
-    Returns:
-        resized frames: torch.Tensor of shape (T, target_H, target_W, C)
-    """
-    # Convert to torch.Tensor if input is NDArray
-    if not isinstance(frames, torch.Tensor):
-        frames = torch.from_numpy(frames.asnumpy() if hasattr(frames, 'asnumpy') else np.array(frames))
-    
-    T, H, W, C = frames.shape
-    target_H, target_W = target_size
-    
-    if use_torch and device == "cuda" and torch.cuda.is_available():
-        # GPU-accelerated resizing using torch
-        frames = frames.to(device)
-        # Permute to (T, C, H, W) for torch operations
-        frames_permuted = frames.permute(0, 3, 1, 2).float()
-        resized_frames = torch.nn.functional.interpolate(
-            frames_permuted, 
-            size=(target_H, target_W), 
-            mode='bilinear', 
-            align_corners=False
-        )
-        # Permute back to (T, H, W, C)
-        resized_frames = resized_frames.permute(0, 2, 3, 1).to(torch.uint8)
-        return resized_frames.cpu()
-    else:
-        # CPU-optimized resizing using cv2
-        frames_np = frames.numpy() if isinstance(frames, torch.Tensor) else frames.asnumpy() if hasattr(frames, 'asnumpy') else np.array(frames)
-        frames_np = frames_np.astype(np.uint8)
-        resized_frames = []
-        
-        for i in range(T):
-            frame = frames_np[i]
-            resized_frame = cv2.resize(frame, (target_W, target_H), interpolation=cv2.INTER_LANCZOS4)
-            resized_frames.append(resized_frame)
-        
-        resized_frames = np.stack(resized_frames, axis=0)
-        return torch.from_numpy(resized_frames)
+# ---------------------------------------------------------------------------
+# Resolution helper
+# ---------------------------------------------------------------------------
+CANDIDATE_RESOLUTIONS: List[Tuple[int, int]] = [
+    (480, 832), (832, 480), (720, 1280), (1280, 720), (1024, 1024)
+]
 
-def resize_clip_temporal(clip: torch.Tensor, target_frames: int = 17) -> torch.Tensor:
-    """
-    Resize clip in temporal dimension to target number of frames
-    Args:
-        clip: torch.Tensor of shape (T, H, W, C)
-        target_frames: target number of frames
-    Returns:
-        resized clip: torch.Tensor of shape (target_frames, H, W, C)
-    """
-    T, H, W, C = clip.shape
-    
-    if T == target_frames:
-        return clip
-    
-    if T == 1:
-        # Single frame, repeat to target_frames
-        return clip.repeat(target_frames, 1, 1, 1)
-    
-    # Use interpolation to resize temporal dimension
-    # Convert to float for interpolation
-    clip_float = clip.float()
-    
-    # Create indices for interpolation
-    original_indices = torch.linspace(0, T - 1, T)
-    target_indices = torch.linspace(0, T - 1, target_frames)
-    
-    # Interpolate each pixel across time
-    resized_frames = []
-    for t in target_indices:
-        # Find the two nearest frames
-        t_floor = int(torch.floor(t))
-        t_ceil = int(torch.ceil(t))
-        
-        if t_floor == t_ceil:
-            # Exact frame
-            resized_frames.append(clip_float[t_floor])
-        else:
-            # Interpolate between two frames
-            weight = t - t_floor
-            frame = (1 - weight) * clip_float[t_floor] + weight * clip_float[t_ceil]
-            resized_frames.append(frame)
-    
-    resized_clip = torch.stack(resized_frames, dim=0)
-    return resized_clip.to(torch.uint8)
-
-def extract_video_clips(video_path: str, target_clip_length: int = 17, overlap: int = 1, device: str = "cpu") -> List[torch.Tensor]:
-    """
-    Extract video clips by reading 1 second of original video and resize to target_clip_length frames
-    Args:
-        video_path: path to video file
-        target_clip_length: target number of frames per clip after resizing
-        overlap: number of overlapping frames between adjacent clips (in terms of seconds)
-        device: "cpu" or "cuda"
-    Returns:
-        list of video clips, each clip is torch.Tensor of shape (target_clip_length, H, W, C)
-    """
-    try:
-        vr = decord.VideoReader(video_path, num_threads=128)
-        total_frames = len(vr)
-        original_fps = vr.get_avg_fps()
-        
-        # Calculate frames per second (1 second clip length in original video)
-        frames_per_second = int(round(original_fps))
-        
-        print(f"Video FPS: {original_fps:.2f}, using {frames_per_second} frames per 1-second clip")
-        
-        if total_frames < frames_per_second:
-            print(f"Warning: Video {video_path} has only {total_frames} frames, less than 1 second ({frames_per_second} frames)")
-            # If video is too short, use all frames and resize to target length
-            all_frames = vr.get_batch(list(range(total_frames)))
-            # Convert to torch.Tensor if needed
-            if not isinstance(all_frames, torch.Tensor):
-                all_frames = torch.from_numpy(all_frames.asnumpy() if hasattr(all_frames, 'asnumpy') else np.array(all_frames))
-            
-            # Resize temporal dimension to target_clip_length
-            resized_clip = resize_clip_temporal(all_frames, target_clip_length)
-            return [resized_clip]
-        
-        clips = []
-        # Calculate overlap in frames (overlap is in seconds, convert to frames)
-        overlap_frames = int(overlap * frames_per_second)
-        step = frames_per_second - overlap_frames
-        
-        for start_idx in range(0, total_frames - frames_per_second + 1, step):
-            end_idx = start_idx + frames_per_second
-            frame_indices = list(range(start_idx, end_idx))
-            clip = vr.get_batch(frame_indices)
-            # Convert to torch.Tensor if needed
-            if not isinstance(clip, torch.Tensor):
-                clip = torch.from_numpy(clip.asnumpy() if hasattr(clip, 'asnumpy') else np.array(clip))
-            
-            # Resize temporal dimension to target_clip_length
-            resized_clip = resize_clip_temporal(clip, target_clip_length)
-            clips.append(resized_clip)
-        
-        # Handle the last clip if there are remaining frames
-        remaining_frames = total_frames - (len(clips) * step)
-        if remaining_frames >= frames_per_second // 2:  # If at least half a second remains
-            start_idx = total_frames - frames_per_second
-            if start_idx < 0:
-                start_idx = 0
-            frame_indices = list(range(start_idx, total_frames))
-            clip = vr.get_batch(frame_indices)
-            # Convert to torch.Tensor if needed
-            if not isinstance(clip, torch.Tensor):
-                clip = torch.from_numpy(clip.asnumpy() if hasattr(clip, 'asnumpy') else np.array(clip))
-            
-            # Resize temporal dimension to target_clip_length
-            resized_clip = resize_clip_temporal(clip, target_clip_length)
-            clips.append(resized_clip)
-            
-        return clips
-        
-    except Exception as e:
-        print(f"Error processing video {video_path}: {str(e)}")
-        return []
-
-def save_video_clip(clip: Union[torch.Tensor, np.ndarray], output_path: str, fps: int = 25):
-    """
-    Save video clip to file
-    Args:
-        clip: torch.Tensor or NDArray of shape (T, H, W, C)
-        output_path: output file path
-        fps: frames per second
-    """
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    T, H, W, C = clip.shape
-    # Convert to numpy array regardless of input type
-    if isinstance(clip, torch.Tensor):
-        clip_np = clip.numpy().astype(np.uint8)
-    else:
-        clip_np = clip.asnumpy().astype(np.uint8) if hasattr(clip, 'asnumpy') else np.array(clip).astype(np.uint8)
-    
-    # Use cv2.VideoWriter to save video
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
-    
-    for i in range(T):
-        frame = clip_np[i]
-        # Convert RGB to BGR for cv2
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        out.write(frame_bgr)
-    
-    out.release()
-
-def get_device_info():
-    """Get available device information"""
-    if torch.cuda.is_available():
-        device = "cuda"
-        device_name = torch.cuda.get_device_name(0)
-        memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        print(f"🚀 GPU available: {device_name} ({memory_gb:.1f}GB)")
-    else:
-        device = "cpu"
-        cpu_count = multiprocessing.cpu_count()
-        print(f"💻 Using CPU with {cpu_count} cores")
-    
-    return device
-
-def get_resolution_name(resolution: Tuple[int, int]) -> str:
-    """Get a name for the resolution"""
-    h, w = resolution
-    if (h, w) == (480, 832):
-        return "480x832"
-    elif (h, w) == (832, 480):
-        return "832x480"
-    elif (h, w) == (720, 1280):
-        return "720x1280"
-    elif (h, w) == (1280, 720):
-        return "1280x720"
-    elif (h, w) == (1024, 1024):
-        return "1024x1024"
-    else:
-        return f"{h}x{w}"
-
-def choose_best_resolution(original_size: Tuple[int, int], candidate_resolutions: List[Tuple[int, int]]) -> Tuple[int, int]:
-    """
-    Choose the best resolution from candidates based on original video size
-    Args:
-        original_size: (height, width) of original video
-        candidate_resolutions: list of (height, width) candidate resolutions
-    Returns:
-        best matching resolution: (height, width)
-    """
-    orig_h, orig_w = original_size
-    orig_aspect_ratio = orig_w / orig_h
-    orig_area = orig_h * orig_w
-    
-    best_resolution = candidate_resolutions[0]
-    best_score = float('inf')
-    
-    for target_h, target_w in candidate_resolutions:
-        target_aspect_ratio = target_w / target_h
-        target_area = target_h * target_w
-        
-        # Calculate aspect ratio difference
-        aspect_diff = abs(orig_aspect_ratio - target_aspect_ratio)
-        
-        # Calculate area ratio (prefer similar or slightly larger area)
-        area_ratio = target_area / orig_area
-        if area_ratio < 1:
-            area_score = 1 / area_ratio  # Penalize downscaling heavily
-        else:
-            area_score = area_ratio  # Moderate penalty for upscaling
-        
-        # Combined score: prioritize aspect ratio match, then area similarity
-        score = aspect_diff * 10 + abs(area_score - 1)
-        
+def choose_best_resolution(orig_size: Tuple[int, int]) -> Tuple[int, int]:
+    h0, w0 = orig_size
+    ar0, area0 = w0 / h0, h0 * w0
+    best, best_score = CANDIDATE_RESOLUTIONS[0], float("inf")
+    for h, w in CANDIDATE_RESOLUTIONS:
+        ar, area = w / h, h * w
+        score = abs(ar - ar0) * 10 + abs((area / area0) - 1 if area >= area0 else (area0 / area) - 1)
         if score < best_score:
-            best_score = score
-            best_resolution = (target_h, target_w)
-    
-    return best_resolution
+            best, best_score = (h, w), score
+    return best
 
-def process_single_clip_resize(args):
-    """Helper function for multiprocessing clip resizing"""
-    clip, resolution, device, use_torch = args
-    return resize_video_frames(clip, resolution, device, use_torch)
+# ---------------------------------------------------------------------------
+# GPU resize (single batch)
+# ---------------------------------------------------------------------------
 
-def process_clips_multithread(clips: List[torch.Tensor], 
-                            resolution: Tuple[int, int], 
-                            device: str = "cpu", 
-                            use_torch: bool = False, 
-                            num_workers: int = None) -> List[torch.Tensor]:
-    """Process multiple clips with multithreading"""
-    if num_workers is None:
-        num_workers = min(len(clips), multiprocessing.cpu_count())
-    
-    if num_workers == 1 or len(clips) == 1:
-        # Single-threaded processing
-        return [resize_video_frames(clip, resolution, device, use_torch) for clip in clips]
-    
-    # Multi-threaded processing
-    resized_clips = [None] * len(clips)
-    
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        # Submit all tasks
-        future_to_index = {
-            executor.submit(resize_video_frames, clip, resolution, device, use_torch): i 
-            for i, clip in enumerate(clips)
-        }
-        
-        # Collect results
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            try:
-                resized_clips[index] = future.result()
-            except Exception as e:
-                print(f"Error processing clip {index}: {str(e)}")
-                resized_clips[index] = clips[index]  # Use original clip as fallback
-    
-    return resized_clips
+def resize_gpu_batch(frames: torch.Tensor, target_hw: Tuple[int, int], clip_len: int) -> List[torch.Tensor]:
+    """frames: (B*clip_len, H, W, C) uint8 CPU/GPU → list[clip] CPU"""
+    if frames.device.type != "cuda":
+        frames = frames.cuda(non_blocking=True)
+    B = frames.shape[0] // clip_len
+    _, H, W, _ = frames.shape
+    x = (
+        frames.view(B, clip_len, H, W, 3)
+        .permute(0, 4, 1, 2, 3)  # (B,C,T,H,W)
+        .float()
+    )
+    x = F.interpolate(x, size=(clip_len, *target_hw), mode="trilinear", align_corners=False)
+    x = x.permute(0, 2, 3, 4, 1).byte().cpu()  # (B,T,H,W,C)
+    return [x[i] for i in range(B)]
 
-def preprocess_video_file(
-    video_path: str,
-    output_dir: str,
-    target_resolutions: List[Tuple[int, int]],
-    clip_length: int = 17,
-    overlap: int = 0,
-    fps: int = 25,
-    device: str = "auto",
-    use_torch: bool = False,
-    num_workers: int = None
+# ---------------------------------------------------------------------------
+# Encoder helper
+# ---------------------------------------------------------------------------
+
+def encode_clip(clip: torch.Tensor, path: str, fps: int):
+    write_video(path, clip, fps=fps, video_codec="libx264")
+
+# ---------------------------------------------------------------------------
+# Misc helpers
+# ---------------------------------------------------------------------------
+
+def gather_videos(p: pathlib.Path) -> List[str]:
+    if p.is_file():
+        return [str(p)]
+    vids: List[str] = []
+    for ext in ("mp4", "avi", "mov", "mkv", "webm", "flv"):
+        vids += glob.glob(str(p / f"**/*.{ext}"), recursive=True)
+        vids += glob.glob(str(p / f"**/*.{ext.upper()}"), recursive=True)
+    return vids
+
+def filter_existing(vids: List[str], out_root: pathlib.Path) -> List[str]:
+    return [v for v in vids if not (out_root / pathlib.Path(v).stem).exists()]
+
+def parse_size(s: str) -> Tuple[int, int]:
+    return tuple(map(int, s.lower().split("x")))  # type: ignore
+
+def parse_gpus(s: str) -> List[int]:
+    return [int(t) for t in s.split(",") if t.strip().isdigit()]
+
+# ---------------------------------------------------------------------------
+# Video processing (one video, one GPU)
+# ---------------------------------------------------------------------------
+
+def process_video(
+    vpath: str,
+    out_root: str,
+    clip_len: int,
+    target_hw: Tuple[int, int] | None,
+    fps: int,
+    max_gpu_clips: int,
+    threads: int,
+    gpu_idx: int,
 ):
-    """
-    Preprocess a single video file
-    Args:
-        video_path: path to input video
-        output_dir: output directory
-        target_resolutions: list of (height, width) tuples
-        clip_length: target number of frames per clip after temporal resizing
-        overlap: overlap between clips (in seconds)
-        fps: output fps
-        device: "cpu", "cuda", or "auto" for automatic detection
-        use_torch: whether to use torch operations for resizing (GPU-friendly)
-        num_workers: number of worker threads for parallel processing
-    """
-    video_name = pathlib.Path(video_path).stem
-    
-    # Auto-detect device
-    if device == "auto":
-        device = get_device_info()
-    elif device == "cuda" and not torch.cuda.is_available():
-        print("⚠️  CUDA requested but not available, falling back to CPU")
-        device = "cpu"
-    
-    # Set default num_workers based on device
-    if num_workers is None:
-        if device == "cuda":
-            num_workers = 2  # Conservative for GPU to avoid memory issues
-        else:
-            num_workers = min(multiprocessing.cpu_count(), 8)  # Limit to avoid too many threads
-    
-    print(f"🎬 Processing video: {video_path}")
-    print(f"⚙️  Device: {device.upper()}, Workers: {num_workers}, Torch resize: {use_torch}")
-    
-    # Get original video resolution
-    try:
-        vr = decord.VideoReader(video_path, num_threads=128)
-        original_height, original_width = vr[0].shape[:2]
-        original_size = (original_height, original_width)
-        print(f"📐 Original resolution: {original_width}x{original_height}")
-    except Exception as e:
-        print(f"❌ Error reading video resolution: {str(e)}")
-        return
-    
-    # Choose the best matching resolution
-    best_resolution = choose_best_resolution(original_size, target_resolutions)
-    resolution_name = get_resolution_name(best_resolution)
-    print(f"🎯 Selected best matching resolution: {resolution_name} {best_resolution}")
-    
-    # Extract clips
-    clips = extract_video_clips(video_path, target_clip_length=clip_length, overlap=overlap, device=device)
-    
-    if not clips:
-        print(f"❌ No clips extracted from {video_path}")
-        return
-    
-    print(f"✂️  Extracted {len(clips)} clips from {video_name}")
-    
-    # Process the selected resolution
-    resolution = best_resolution
-    resolution_name = get_resolution_name(resolution)
-    resolution_dir = os.path.join(output_dir, resolution_name, video_name)
-    
-    print(f"🔄 Processing resolution {resolution_name} with {num_workers} workers...")
-    
-    # Multi-threaded clip resizing
-    with tqdm(total=len(clips), desc=f"Resizing clips for {resolution_name}") as pbar:
-        resized_clips = process_clips_multithread(
-            clips, resolution, device, use_torch, num_workers
-        )
-        pbar.update(len(clips))
-    
-    # Save clips
-    print(f"💾 Saving {len(resized_clips)} clips...")
-    for i, resized_clip in enumerate(tqdm(resized_clips, desc=f"Saving clips for {resolution_name}")):
-        output_path = os.path.join(resolution_dir, f"clip_{i:04d}.mp4")
-        save_video_clip(resized_clip, output_path, fps)
-    
-    # Save metadata
-    metadata = {
-        "original_video": video_path,
-        "original_resolution": original_size,
-        "clip_length": clip_length,
-        "overlap": overlap,
-        "target_resolution": resolution,
-        "num_clips": len(clips),
-        "fps": fps,
-        "device": device,
-        "use_torch": use_torch,
-        "num_workers": num_workers
-    }
-    metadata_path = os.path.join(resolution_dir, "metadata.json")
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=2)
-    
-    print(f"✅ Completed {resolution_name} - saved to {resolution_dir}")
+    torch.cuda.set_device(gpu_idx)
+    stem = pathlib.Path(vpath).stem
+    out_dir = pathlib.Path(out_root) / stem
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-def preprocess_videos(
-    input_dir: str,
-    output_dir: str,
-    target_resolutions: List[Tuple[int, int]] = None,
-    clip_length: int = 17,
-    overlap: int = 0,
-    fps: int = 25,
-    video_extensions: List[str] = None,
-    device: str = "auto",
-    use_torch: bool = False,
-    num_workers: int = None,
-    max_concurrent_videos: int = 1
-):
-    """
-    Preprocess all videos in a directory
-    Args:
-        input_dir: input directory containing videos
-        output_dir: output directory
-        target_resolutions: list of (height, width) tuples
-        clip_length: target number of frames per clip after temporal resizing
-        overlap: overlap between clips (in seconds)
-        fps: output fps
-        video_extensions: supported video file extensions
-        device: "cpu", "cuda", or "auto" for automatic detection
-        use_torch: whether to use torch operations for resizing (GPU-friendly)
-        num_workers: number of worker threads for parallel processing per video
-        max_concurrent_videos: maximum number of videos to process simultaneously
-    """
-    if target_resolutions is None:
-        target_resolutions = [
-            (480, 832),   # Portrait 480x832
-            (832, 480),   # Landscape 832x480
-            (720, 1280),  # Portrait 720x1280
-            (1280, 720),  # Landscape 1280x720
-            (1024, 1024)  # Square 1024x1024
-        ]
-    
-    if video_extensions is None:
-        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
-    
-    input_path = pathlib.Path(input_dir)
-    
-    # Find all video files
-    video_files = []
-    for ext in video_extensions:
-        video_files.extend(input_path.rglob(f"*{ext}"))
-        video_files.extend(input_path.rglob(f"*{ext.upper()}"))
-    
-    print(f"📁 Found {len(video_files)} video files")
-    print(f"🏭 Processing with max {max_concurrent_videos} concurrent videos")
-    
-    # Process videos concurrently
-    def process_single_video(video_file):
-        try:
-            preprocess_video_file(
-                str(video_file),
-                output_dir,
-                target_resolutions,
-                clip_length,
-                overlap,
+    vr = decord.VideoReader(vpath, num_threads=12)
+    total_frames = len(vr)
+    if target_hw is None:
+        target_hw = choose_best_resolution(vr[0].shape[:2])
+
+    clips_per_batch = max_gpu_clips
+    frames_per_batch = clips_per_batch * clip_len
+    total_clips = total_frames // clip_len
+
+    encode_pool = ThreadPoolExecutor(max_workers=threads)
+    futures = []
+
+    clip_idx = 0
+    for start_clip in range(0, total_clips, clips_per_batch):
+        batch_clips = min(clips_per_batch, total_clips - start_clip)
+        start_frame = start_clip * clip_len
+        end_frame = start_frame + batch_clips * clip_len
+        raw = vr.get_batch(range(start_frame, end_frame))
+        if not isinstance(raw, torch.Tensor):
+            raw = torch.from_numpy(raw.asnumpy() if hasattr(raw, "asnumpy") else raw)
+
+        resized = resize_gpu_batch(raw, target_hw, clip_len)
+        for clip in resized:
+            fut = encode_pool.submit(
+                encode_clip,
+                clip,
+                out_dir / f"clip_{clip_idx:04d}.mp4",
                 fps,
-                device,
-                use_torch,
-                num_workers
             )
-            return str(video_file), True, None
-        except Exception as e:
-            error_msg = f"Error processing {video_file}: {str(e)}"
-            print(f"❌ {error_msg}")
-            return str(video_file), False, error_msg
-    
-    if max_concurrent_videos == 1:
-        # Sequential processing
-        for video_file in video_files:
-            process_single_video(video_file)
-    else:
-        # Concurrent processing
-        with ThreadPoolExecutor(max_workers=max_concurrent_videos) as executor:
-            # Submit all video processing tasks
-            future_to_video = {
-                executor.submit(process_single_video, video_file): video_file 
-                for video_file in video_files
-            }
-            
-            # Track results
-            successful = 0
-            failed = 0
-            
-            # Process completed tasks
-            for future in tqdm(as_completed(future_to_video), total=len(video_files), desc="Processing videos"):
-                video_file = future_to_video[future]
-                try:
-                    video_path, success, error = future.result()
-                    if success:
-                        successful += 1
-                    else:
-                        failed += 1
-                except Exception as e:
-                    print(f"❌ Unexpected error with {video_file}: {str(e)}")
-                    failed += 1
-            
-            print(f"\n📊 Processing complete: {successful} successful, {failed} failed")
+            futures.append(fut)
+            clip_idx += 1
+
+    for f in as_completed(futures):
+        if exc := f.exception():
+            print(f"❌ write error: {exc}")
+    encode_pool.shutdown()
+
+# ---------------------------------------------------------------------------
+# CLI entry
+# ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Preprocess videos into clips with different resolutions (CPU/GPU + Multi-threading)")
-    parser.add_argument("--input_dir", type=str, help="Input directory containing videos")
-    parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
-    parser.add_argument("--clip_length", type=int, default=17, help="Target number of frames per clip after temporal resizing")
-    parser.add_argument("--overlap", type=int, default=0, help="Overlap between clips in seconds")
-    parser.add_argument("--fps", type=int, default=17, help="Output FPS")
-    parser.add_argument("--single_video", type=str, help="Process a single video file instead of directory")
-    
-    # Performance options
-    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], 
-                       help="Processing device: auto (detect), cpu, or cuda")
-    parser.add_argument("--use_torch", action="store_true", 
-                       help="Use torch operations for resizing (GPU-friendly, slower on CPU)")
-    parser.add_argument("--num_workers", type=int, default=None, 
-                       help="Number of worker threads for parallel clip processing")
-    parser.add_argument("--max_concurrent_videos", type=int, default=1, 
-                       help="Maximum number of videos to process simultaneously")
-    
-    args = parser.parse_args()
-    
-    # Validate arguments
-    if not args.single_video and not args.input_dir:
-        parser.error("Either --single_video or --input_dir must be specified")
-    
-    # Define target resolutions
-    target_resolutions = [
-        (480, 832),   # Portrait 480x832
-        (832, 480),   # Landscape 832x480
-        (720, 1280),  # Portrait 720x1280
-        (1280, 720),  # Landscape 1280x720
-        (1024, 1024)  # Square 1024x1024
-    ]
-    
-    # Print configuration
-    print("🚀 Video Preprocessing Configuration:")
-    print(f"   Device: {args.device}")
-    print(f"   Use Torch: {args.use_torch}")
-    print(f"   Workers per video: {args.num_workers or 'auto'}")
-    print(f"   Max concurrent videos: {args.max_concurrent_videos}")
-    print(f"   Target clip length: {args.clip_length} frames (after temporal resizing)")
-    print(f"   Clip extraction: 1-second segments from original video")
-    print(f"   Overlap: {args.overlap} seconds")
-    print(f"   Output FPS: {args.fps}")
-    print()
+    ap = argparse.ArgumentParser(description="Multi‑GPU video slicer (streaming, OOM‑safe)")
+    ap.add_argument("--input", help="video file or directory")
+    ap.add_argument("--output", help="output directory")
+    ap.add_argument("--frames", type=int, default=17, help="frames per clip")
+    ap.add_argument("--size", default="auto", help="HxW or 'auto'")
+    ap.add_argument("--fps", type=int, default=25, help="output FPS")
+    ap.add_argument("--max-gpu-clips", type=int, default=15, help="clips per GPU batch (<=15 safe ~255 frames)")
+    ap.add_argument("--threads", type=int, default=8, help="parallel encoders per video")
+    ap.add_argument("--gpus", default="0", help="comma‑separated CUDA indices, e.g. 0,1")
+    args = ap.parse_args()
 
-    if args.single_video:
-        # Process single video
-        preprocess_video_file(
-            args.single_video,
-            args.output_dir,
-            target_resolutions,
-            args.clip_length,
-            args.overlap,
-            args.fps,
-            args.device,
-            args.use_torch,
-            args.num_workers
-        )
-    else:
-        # Process directory
-        preprocess_videos(
-            args.input_dir,
-            args.output_dir,
-            target_resolutions,
-            args.clip_length,
-            args.overlap,
-            args.fps,
-            video_extensions=None,
-            device=args.device,
-            use_torch=args.use_torch,
-            num_workers=args.num_workers,
-            max_concurrent_videos=args.max_concurrent_videos
-        )
-    
-    print("🎉 Preprocessing completed!")
+    gpu_ids = parse_gpus(args.gpus) if torch.cuda.is_available() else []
+    if not gpu_ids:
+        gpu_ids = [0]
+    if max(gpu_ids) >= torch.cuda.device_count():
+        raise ValueError("GPU index exceeds available devices")
+
+    target_hw = None if args.size.lower() == "auto" else parse_size(args.size)
+
+    in_path = pathlib.Path(args.input)
+    vids = filter_existing(gather_videos(in_path), pathlib.Path(args.output))
+    if not vids:
+        print("No new videos to process.")
+        return
+
+    print(f"🚀 {len(vids)} videos → GPUs {gpu_ids} (clips/batch={args.max_gpu_clips})")
+    gpu_cycle = cycle(gpu_ids)
+
+    with ThreadPoolExecutor(max_workers=len(gpu_ids)) as ex:
+        fut_map = {
+            ex.submit(
+                process_video,
+                vp,
+                args.output,
+                args.frames,
+                target_hw,
+                args.fps,
+                args.max_gpu_clips,
+                args.threads,
+                next(gpu_cycle),
+            ): vp
+            for vp in vids
+        }
+        for f in tqdm(as_completed(fut_map), total=len(vids), unit="video"):
+            if exc := f.exception():
+                print(f"❌ {fut_map[f]}: {exc}")
+    print("✅ All done.")
+
 
 if __name__ == "__main__":
-    main() 
+    main()
