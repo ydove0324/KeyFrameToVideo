@@ -67,11 +67,11 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         transformer,  # WanTransformer3DModel
         vae,  # AutoencoderKLWan
         ibq_model,  # IBQModel
-        image_encoder,  # CLIPVisionModel
-        image_processor,  # CLIPImageProcessor
+        scheduler,  # FlowMatchEulerDiscreteScheduler
         text_encoder=None,  # T5EncoderModel
         tokenizer=None,  # UMT5Tokenizer
-        scheduler: FlowMatchEulerDiscreteScheduler,
+        image_encoder=None,  # CLIPVisionModel
+        image_processor=None,  # CLIPImageProcessor
         device: Optional[torch.device]=None,
     ):
         super().__init__()
@@ -205,11 +205,10 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
     @torch.no_grad()
     def __call__(
         self,
-        *,
-        encoder_hidden_states: Optional[torch.Tensor]=None,  # pre‑encoded text embeddings
-        prompt: Optional[str]=None,
-        key_frames: torch.Tensor,# [B,F',3,H,W] F' 是 key_frames 的帧数
-        key_frames_indices: torch.Tensor,# [B,F'] F' 是 key_frames 的帧数
+        key_frames: torch.Tensor,  # [B,F',3,H,W] F' 是 key_frames 的帧数
+        key_frames_indices: torch.Tensor,  # [B,F'] F' 是 key_frames 的帧数
+        encoder_hidden_states: Optional[torch.Tensor] = None,  # pre‑encoded text embeddings
+        prompt: Optional[str] = None,
         height: int = 480,
         width: int = 832,
         num_frames: int = 49,
@@ -217,6 +216,8 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         generator: Optional[torch.Generator] = None,
         save_debug_video_to: Optional[str] = None,  # path or None
         guidance_scale: float = 5.0,
+        *args,
+        **kwargs,
     ) -> List[Image.Image]:
         """Generate a video conditioned on the provided key‑frames.
 
@@ -225,11 +226,11 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         """
         device = self.device
         dtype = self.transformer.dtype
-        if prompt and encoder_hidden_states:
-            raise ValueError("prompt and encoder_hidden_states cannot be provided at the same time")
-        if not prompt and not encoder_hidden_states:
+        if prompt is None and encoder_hidden_states is None:
             raise ValueError("prompt or encoder_hidden_states must be provided")
-        if prompt:
+        if prompt is not None and encoder_hidden_states is not None:
+            raise ValueError("prompt and encoder_hidden_states cannot be provided at the same time")
+        if prompt is not None:
             encoder_hidden_states = self._get_t5_prompt_embeds(prompt)
             uncond_embeds = self._get_t5_prompt_embeds(prompt="")
 
@@ -343,8 +344,6 @@ if __name__ == "__main__":
         transformer=transformer,
         ibq_model=ibq_model,
         vae=vae,
-        image_encoder=image_encoder,
-        image_processor=image_processor,
         scheduler=scheduler,
         tokenizer=tokenizer,
     ).to("cuda")

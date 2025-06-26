@@ -24,7 +24,6 @@ class IBQ(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        self.dtype = dtype
         self.encoder = Encoder(**ddconfig)
         self.decoder = Decoder(**ddconfig)
 
@@ -42,6 +41,7 @@ class IBQ(nn.Module):
         self.quant_conv = nn.Conv2d(ddconfig["z_channels"], embed_dim, 1)
         self.post_quant_conv = nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
         self.dtype = self.quant_conv.weight.dtype
+        self.device = None
 
     def encode(self, x):
         h = self.encoder(x)
@@ -64,6 +64,22 @@ class IBQ(nn.Module):
         quant, diff, _ = self.encode(input)
         dec = self.decode(quant, return_intermediate_feature=return_intermediate_feature)
         return dec, diff
+    
+    def to(self, *args, **kwargs):
+        device = None
+        dtype = None
+        
+        # Handle direct device argument
+        if len(args) > 0 and isinstance(args[0], (str, torch.device)):
+            self.device = args[0]
+        
+        # Handle kwargs
+        if "dtype" in kwargs:
+            self.dtype = kwargs["dtype"]
+        if "device" in kwargs:
+            self.device = kwargs["device"]
+            
+        return super().to(*args, **kwargs)
 
 
 

@@ -92,15 +92,8 @@ def main():
             trainer = ControlTrainer(args, model_specification)
         else:
             raise ValueError(f"Training type {args.training_type} not supported.")
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU],
-            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=True
-        ) as prof:
-             trainer.run(prof)
+
+        trainer.run()
 
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt. Exiting...")
