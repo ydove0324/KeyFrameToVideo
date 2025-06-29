@@ -669,6 +669,8 @@ class ValidationDataset(torch.utils.data.IterableDataset):
                     logger.warning(f"Control Video file {control_video_path.as_posix()} does not exist.")
                 else:
                     sample["control_video"] = load_video(sample["control_video_path"])
+            if sample.get("key_frames_indices", None) is not None:
+                sample["key_frames_indices"] = torch.tensor(sample["key_frames_indices"])
 
             sample = {k: v for k, v in sample.items() if v is not None}
             yield sample
@@ -763,6 +765,10 @@ class IterableDatasetPreprocessingWrapper(
             if self.id_token is not None:
                 caption = f"{self.id_token} {caption}"
             sample["caption"] = caption
+
+            # Handle key_frames_indices if present (similar to ValidationDataset)
+            if sample.get("key_frames_indices", None) is not None:
+                sample["key_frames_indices"] = torch.tensor(sample["key_frames_indices"])
 
             yield sample
 

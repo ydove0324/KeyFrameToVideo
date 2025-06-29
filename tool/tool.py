@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 from tqdm import tqdm
+import random
 
 # Try to import video validation libraries
 try:
@@ -314,10 +315,11 @@ def generate_metadata_entry(video_path: str, use_relative_path: bool = True, bas
         file_path = rel_path
     else:
         file_path = video_path
-    
+    key_frames_options = [[0,16],[0,8,16],[0,4,8,12,16]]
     return {
         "file_name": file_path,
-        "caption": ""  # 空的caption
+        "caption": "",  # 空的caption
+        "key_frames_indices": random.choice(key_frames_options)
     }
 
 

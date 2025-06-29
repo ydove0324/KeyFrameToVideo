@@ -319,7 +319,7 @@ import decord
 
 if __name__ == "__main__":
     # load your checkpoints as before …
-    transformer_path = "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B"
+    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pexel-part2_0123/model_weights/002500"
     model_id = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 
@@ -338,7 +338,7 @@ if __name__ == "__main__":
 
     # Initialize model with config
     ibq_model = IBQ(**config.model.init_args).to(dtype=torch.bfloat16)
-    scheduler =  UniPCMultistepScheduler(prediction_type='flow_prediction', use_flow_sigmas=True, num_train_timesteps=1000, flow_shift=3.0)
+    scheduler =  FlowMatchEulerDiscreteScheduler()
     pipe = WanIBQKeyFrame2VideoPipeline(
         text_encoder=text_encoder,
         transformer=transformer,
@@ -350,20 +350,20 @@ if __name__ == "__main__":
     video_path = "data/pexel/a39e78046826c99432173630feec2456fe87ca43.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
-    key_frames_indices = torch.Tensor([0,16]).to("cuda")
+    key_frames_indices = torch.Tensor([0,4,8,12,16]).to("cuda")
     key_frames_indices = key_frames_indices.unsqueeze(0)
-    key_frames = vr.get_batch([0,16]).to("cuda")    # [F,H,W,3]
+    key_frames = vr.get_batch([0,4,8,12,16]).to("cuda")    # [F,H,W,3]
     key_frames = key_frames.permute(0, 3, 1, 2)    # [F,3,H,W]
     key_frames = key_frames.unsqueeze(0)    # [B,F,3,H,W] B = 1
     
     
     video = pipe(
-        prompt="beautiful girls",
+        prompt="",
         key_frames=key_frames,
         key_frames_indices=key_frames_indices,
         height=480,
         width=832,
-        num_frames=49,
+        num_frames=17,
         num_inference_steps=50,
         guidance_scale=0
     )

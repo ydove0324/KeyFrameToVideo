@@ -4,18 +4,30 @@ set -e -x
 
 # export TORCH_LOGS="+dynamo,recompiles,graph_breaks"
 # export TORCHDYNAMO_VERBOSE=1
-export WANDB_MODE="online"
+export WANDB_MODE="offline"
 export NCCL_P2P_DISABLE=1
 export TORCH_NCCL_ENABLE_MONITORING=0
 export FINETRAINERS_LOG_LEVEL="DEBUG"
+export NCCL_SOCKET_IFNAME=eth0
+export NCCL_IB_DISABLE=0
+export NCCL_IB_CUDA_SUPPORT=1
+export NCCL_IB_GID_INDEX=0
+export NCCL_IB_HCA=mlx5_2,mlx5_5
+export NCCL_IB_TIMEOUT=23
+export NCCL_IB_RETRY_CNT=7
+export NCCL_DEBUG=WARN
+export TORCH_DISTRIBUTED_DEBUG=INFO
+export OMP_NUM_THREADS=4
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:1024"
+export TORCH_NCCL_BLOCKING_WAIT=1
 
 # Finetrainers supports multiple backends for distributed training. Select your favourite and benchmark the differences!
 # BACKEND="accelerate"
 BACKEND="ptd"
 
 # In this setting, I'm using 2 GPUs on a 4-GPU node for training
-NUM_GPUS=4
-CUDA_VISIBLE_DEVICES="0,1,2,3"
+NUM_GPUS=8
+CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 
 # Check the JSON files for the expected JSON format
 TRAINING_DATASET_CONFIG="examples/training/sft/wan/pexel/training.json"
@@ -32,13 +44,13 @@ DDP_8="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 8 --dp_shards 1 --c
 
 # Parallel arguments
 parallel_cmd=(
-  $DDP_4
+  $DDP_8
 )
 
 # Model arguments
 model_cmd=(
-  --model_name "wan"
-  --pretrained_model_name_or_path "/share/project/huangxu/Wan2.1-T2V-1.3B-diffusers"
+  --model_name "wan_ibq_key_frame"
+  --pretrained_model_name_or_path "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 )
 
 # Dataset arguments
@@ -72,21 +84,22 @@ training_cmd=(
   --training_type "full-finetune"
   --seed 42
   --batch_size 4
-  --train_steps 10000
+  --train_steps 7500
+  --resume_from_checkpoint 3000
 #   --rank 32
 #   --lora_alpha 32
 #   --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
-  --enable_video_segmentation
-  --frames_per_segment 17
-  --overlap_frames 1
-  --gradient_accumulation_steps 1
+  # --enable_video_segmentation
+  # --frames_per_segment 17
+  # --overlap_frames 1
+  --gradient_accumulation_steps 4
   --gradient_checkpointing
-  --checkpointing_steps 1000
-  --checkpointing_limit 2
-  --resume_from_checkpoint 7500
+  --checkpointing_steps 500
+  --checkpointing_limit 3
+  --transformer_id "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B/transformer"
   --enable_slicing
   --enable_tiling
-  --train_added_modules_only true
+  # --train_added_modules_only true
   # --enable_precomputation
   # --precomputation_items 128
   # --enable_precomputation_reuse
@@ -96,9 +109,9 @@ training_cmd=(
 # Optimizer arguments
 optimizer_cmd=(
   --optimizer "adamw"
-  --lr 1e-4
+  --lr 5e-5
   --lr_scheduler "constant_with_warmup"
-  --lr_warmup_steps 750
+  --lr_warmup_steps 500
   --lr_num_cycles 1
   --beta1 0.9
   --beta2 0.99
@@ -110,16 +123,16 @@ optimizer_cmd=(
 # Validation arguments
 validation_cmd=(
   --validation_dataset_file "$VALIDATION_DATASET_FILE"
-  --validation_steps 500
+  --validation_steps 10000
 )
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-t2v-debug-pexel"
-  --output_dir "/share/project/huangxu/wan-t2v-debug-intern-video-clips"
+  --tracker_name "finetrainers-wan-ibq-key-frame-pexel-part2_0123"
+  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pexel-part2_0123"
   --init_timeout 600
   --nccl_timeout 600
-  --report_to "wandb"
+  --report_to "none"
 )
 
 # Execute the training script

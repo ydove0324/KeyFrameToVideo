@@ -23,7 +23,6 @@ from finetrainers.state import TrainState
 
 from ..base import Trainer
 from .config import SFTFullRankConfig, SFTLowRankConfig
-from .video_segment_data import IterableVideoSegmentDataset, ValidationVideoSegmentDataset
 
 
 ArgsType = Union[BaseArgsType, SFTFullRankConfig, SFTLowRankConfig]
@@ -55,6 +54,9 @@ class SFTTrainer(Trainer):
 
         # Autoencoders
         self.vae = None
+
+        # IBQ model
+        self.ibq_model = None
 
         # Scheduler
         self.scheduler = None
@@ -270,16 +272,6 @@ class SFTTrainer(Trainer):
         dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True,prof=prof)
         
         
-        # Add video segmentation processing if enabled
-        if hasattr(self.args, 'enable_video_segmentation') and self.args.enable_video_segmentation:
-            frames_per_segment = getattr(self.args, 'frames_per_segment', 17)
-            overlap_frames = getattr(self.args, 'overlap_frames', 0)
-            logger.info(f"Wrapping dataset with VideoSegment processing: {frames_per_segment} frames per segment, {overlap_frames} overlap frames")
-            dataset = IterableVideoSegmentDataset(
-                dataset, 
-                frames_per_segment=frames_per_segment,
-                overlap_frames=overlap_frames
-            )
         
         dataloader = self.state.parallel_backend.prepare_dataloader(
             dataset, batch_size=1, num_workers=self.args.dataloader_num_workers, pin_memory=self.args.pin_memory
@@ -338,7 +330,7 @@ class SFTTrainer(Trainer):
         if resume_from_checkpoint == "latest":
             resume_from_checkpoint = -1
         if resume_from_checkpoint is not None:
-            self.checkpointer.load(resume_from_checkpoint,disableDataloader=True)
+            self.checkpointer.load(resume_from_checkpoint,disableDataloader=True)   # TODO: 这里需要改
 
     def _train(self,prof=None) -> None:
         logger.info("Starting training")
@@ -772,6 +764,7 @@ class SFTTrainer(Trainer):
                 self.image_encoder,
                 self.transformer,
                 self.vae,
+                self.ibq_model,
             ]
         components = utils.get_non_null_items(components)
         components = list(filter(lambda x: hasattr(x, "to"), components))
@@ -793,7 +786,7 @@ class SFTTrainer(Trainer):
         utils.synchronize_device()
 
     def _init_pipeline(self, final_validation: bool = False) -> DiffusionPipeline:
-        module_names = ["text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder", "transformer", "vae"]
+        module_names = ["text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder", "transformer", "vae", "ibq_model"]
 
         if not final_validation:
             module_names.remove("transformer")
@@ -806,6 +799,7 @@ class SFTTrainer(Trainer):
                 text_encoder_3=self.text_encoder_3,
                 image_encoder=self.image_encoder,
                 image_processor=self.image_processor,
+                ibq_model=self.ibq_model,
                 # TODO(aryan): handle unwrapping for compiled modules
                 # transformer=utils.unwrap_model(accelerator, self.transformer),
                 transformer=self.transformer,
@@ -962,8 +956,8 @@ class SFTTrainer(Trainer):
         return info
 
     # fmt: off
-    _all_component_names = ["tokenizer", "tokenizer_2", "tokenizer_3", "text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder", "image_processor", "transformer", "unet", "vae", "scheduler"]
+    _all_component_names = ["tokenizer", "tokenizer_2", "tokenizer_3", "text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder", "image_processor", "transformer", "unet", "vae", "scheduler", "ibq_model"]
     _condition_component_names = ["tokenizer", "tokenizer_2", "tokenizer_3", "text_encoder", "text_encoder_2", "text_encoder_3"]
-    _latent_component_names = ["image_encoder", "image_processor", "vae"]
+    _latent_component_names = ["image_encoder", "image_processor", "vae", "ibq_model"]
     _diffusion_component_names = ["transformer", "unet", "scheduler"]
     # fmt: on

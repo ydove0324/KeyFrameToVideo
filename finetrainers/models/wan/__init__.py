@@ -1,2 +1,3 @@
 from .base_specification import WanModelSpecification
 from .control_specification import WanControlModelSpecification
+from .ibq_key_frame_specification import WanIBQKeyFrame2VideoModelSpecification

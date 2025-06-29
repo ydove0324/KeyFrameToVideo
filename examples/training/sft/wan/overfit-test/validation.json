@@ -7,7 +7,8 @@
         "num_inference_steps": 50,
         "height": 480,
         "width": 832,
-        "num_frames": 17
+        "num_frames": 17,
+        "key_frames_indices": [[0, 16]]
       },
       {
         "caption": "",
@@ -16,7 +17,8 @@
         "num_inference_steps": 50,
         "height": 480,
         "width": 832,
-        "num_frames": 17
+        "num_frames": 17,
+        "key_frames_indices": [[0, 16]]
       }
     ]
   }

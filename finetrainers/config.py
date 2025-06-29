@@ -7,7 +7,7 @@ from .models.cogview4 import CogView4ControlModelSpecification, CogView4ModelSpe
 from .models.flux import FluxModelSpecification
 from .models.hunyuan_video import HunyuanVideoModelSpecification
 from .models.ltx_video import LTXVideoModelSpecification
-from .models.wan import WanControlModelSpecification, WanModelSpecification
+from .models.wan import WanControlModelSpecification, WanModelSpecification, WanIBQKeyFrame2VideoModelSpecification
 
 
 class ModelType(str, Enum):
@@ -17,6 +17,7 @@ class ModelType(str, Enum):
     HUNYUAN_VIDEO = "hunyuan_video"
     LTX_VIDEO = "ltx_video"
     WAN = "wan"
+    WAN_IBQ_KEY_FRAME = "wan_ibq_key_frame"
 
 
 class TrainingType(str, Enum):
@@ -59,6 +60,10 @@ SUPPORTED_MODEL_CONFIGS = {
         TrainingType.FULL_FINETUNE: WanModelSpecification,
         TrainingType.CONTROL_LORA: WanControlModelSpecification,
         TrainingType.CONTROL_FULL_FINETUNE: WanControlModelSpecification,
+    },
+    ModelType.WAN_IBQ_KEY_FRAME: {
+        TrainingType.LORA: WanIBQKeyFrame2VideoModelSpecification,
+        TrainingType.FULL_FINETUNE: WanIBQKeyFrame2VideoModelSpecification,
     },
 }
 

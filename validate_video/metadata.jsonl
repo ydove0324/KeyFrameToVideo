@@ -1,11 +1,12 @@
-{"file_name": "0CWZMaN4uAE_s006.mp4", "caption": ""}
-{"file_name": "0CWZMaN4uAE_s001.mp4", "caption": ""}
-{"file_name": "0CWZMaN4uAE_s002.mp4", "caption": ""}
-{"file_name": "0CWZMaN4uAE_s003.mp4", "caption": ""}
-{"file_name":"clip_0000.mp4", "caption": ""}
-{"file_name":"clip_0001.mp4", "caption": ""}
-{"file_name":"clip_0002.mp4", "caption": ""}
-{"file_name":"clip_0003.mp4", "caption": ""}
-{"file_name":"clip_0004.mp4", "caption": ""}
-{"file_name":"clip_0005.mp4", "caption": ""}
-{"file_name":"clip_0006.mp4", "caption": ""}
+{"file_name": "0CWZMaN4uAE_s006.mp4", "caption": "", "key_frames_indices": [0,8,16] }
+{"file_name": "0CWZMaN4uAE_s001.mp4", "caption": "", "key_frames_indices": [0,16]}
+{"file_name": "0CWZMaN4uAE_s002.mp4", "caption": "", "key_frames_indices": [0,16]}
+{"file_name": "0CWZMaN4uAE_s003.mp4", "caption": "", "key_frames_indices": [0,16]}
+{"file_name":"clip_0000.mp4", "caption": "", "key_frames_indices": [0,8,16]}
+{"file_name":"clip_0001.mp4", "caption": "", "key_frames_indices": [0,8,16]}
+{"file_name":"clip_0002.mp4", "caption": "", "key_frames_indices": [0,8,16]}
+{"file_name":"clip_0002.mp4", "caption": "", "key_frames_indices": [0,4,8,12,16]}
+{"file_name":"clip_0003.mp4", "caption": "", "key_frames_indices": [0,8,16]}
+{"file_name":"clip_0004.mp4", "caption": "", "key_frames_indices": [0,8,16]}
+{"file_name":"clip_0005.mp4", "caption": "", "key_frames_indices": [0,8,16]}
+{"file_name":"clip_0006.mp4", "caption": "", "key_frames_indices": [0,8,16]}

@@ -15,8 +15,8 @@ export FINETRAINERS_LOG_LEVEL="DEBUG"
 BACKEND="ptd"
 
 # In this setting, I'm using 2 GPUs on a 4-GPU node for training
-NUM_GPUS=2
-CUDA_VISIBLE_DEVICES="0,1"
+NUM_GPUS=8
+CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 
 # Check the JSON files for the expected JSON format
 TRAINING_DATASET_CONFIG="examples/training/sft/wan/overfit-test/training.json"
@@ -33,13 +33,13 @@ DDP_8="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 8 --dp_shards 1 --c
 
 # Parallel arguments
 parallel_cmd=(
-  $DDP_2
+  $DDP_8
 )
 
 # Model arguments
 model_cmd=(
   --model_name "wan"
-  --pretrained_model_name_or_path "/share/project/huangxu/Wan2.1-T2V-1.3B-diffusers"
+  --pretrained_model_name_or_path "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 )
 
 # Dataset arguments
@@ -82,10 +82,10 @@ training_cmd=(
   # --overlap_frames 1
   --gradient_accumulation_steps 1
   --gradient_checkpointing
-  --checkpointing_steps 1000
+  --checkpointing_steps 500
   --enable_slicing
   --enable_tiling
-  --transformer_id "/share/project/huangxu/wan-t2v-overfit-debug-intern-video-clips/model_weights/002000/transformer"
+  --transformer_id "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B/transformer"
   # --enable_precomputation
   # --precomputation_items 128
   # --enable_precomputation_reuse
@@ -97,7 +97,7 @@ optimizer_cmd=(
   --optimizer "adamw"
   --lr 5e-5
   --lr_scheduler "constant_with_warmup"
-  --lr_warmup_steps 500
+  --lr_warmup_steps 200
   --lr_num_cycles 1
   --beta1 0.9
   --beta2 0.99
@@ -114,11 +114,11 @@ validation_cmd=(
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-t2v-debug-pexel"
-  --output_dir "/share/project/huangxu/wan-t2v-full-finetune-overfit-test"
+  --tracker_name "finetrainers-wan-ibq_key_frame2v-full-finetune-overfit-test"
+  --output_dir "/share/project/huangxu/model/wan-ibq_key_frame2v-full-finetune-overfit-test"
   --init_timeout 600
   --nccl_timeout 600
-  --report_to "wandb"
+  --report_to "none"
 )
 
 # Execute the training script

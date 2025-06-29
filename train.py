@@ -92,7 +92,6 @@ def main():
             trainer = ControlTrainer(args, model_specification)
         else:
             raise ValueError(f"Training type {args.training_type} not supported.")
-
         trainer.run()
 
     except KeyboardInterrupt:

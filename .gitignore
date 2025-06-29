@@ -181,3 +181,6 @@ wan-framepack/
 *.pt
 log
 logs
+data/
+debug_tensors
+debug_video
