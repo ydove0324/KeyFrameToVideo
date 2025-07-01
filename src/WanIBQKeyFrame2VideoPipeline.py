@@ -271,13 +271,13 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         # --------------------------------------------------------------
         # 3. Initialise noisy latents & set timesteps
         # --------------------------------------------------------------
-        latents = torch.randn(B, 16, (num_frames - 1) // 4 + 1, height // 8, width // 8, device=device, dtype=dtype)
+        latents = torch.randn(B, 16, (num_frames - 1) // 4 + 1, height // 8, width // 8, device=device, dtype=dtype)    # 16 vae channels
         self.scheduler.set_timesteps(num_inference_steps, device=device)
 
         # --------------------------------------------------------------
         # 4. Denoising loop
         # --------------------------------------------------------------
-        
+
         for i, t in enumerate(tqdm(self.scheduler.timesteps, desc="inference", unit="step")):
             lat_in = torch.cat([latents, latent_condition_mask, latent_condition], dim=1)
             transformer_out = self.transformer(
@@ -286,13 +286,13 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
                 timestep=t.unsqueeze(0).long(),
                 return_dict=False,
             )[0]
-            uncond_transformer_out = self.transformer(
-                hidden_states=lat_in,
-                encoder_hidden_states=uncond_embeds,
-                timestep=t.unsqueeze(0).long(),
-                return_dict=False,
-            )[0]
-            transformer_out = transformer_out + guidance_scale * (transformer_out - uncond_transformer_out)
+            # uncond_transformer_out = self.transformer(
+            #     hidden_states=lat_in,
+            #     encoder_hidden_states=uncond_embeds,
+            #     timestep=t.unsqueeze(0).long(),
+            #     return_dict=False,
+            # )[0]
+            # transformer_out = transformer_out + guidance_scale * (transformer_out - uncond_transformer_out)
 
             if i == 0 and save_debug_video_to is not None:
                 # save "x₀" for inspection just like the notebook
@@ -319,11 +319,19 @@ import decord
 
 if __name__ == "__main__":
     # load your checkpoints as before …
-    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pexel-part2_0123/model_weights/002500"
+    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-train-patch-embedding/model_weights/002000"
     model_id = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 
     transformer = WanTransformer3DModel.from_pretrained(transformer_path,subfolder="transformer", torch_dtype=torch.bfloat16)
+    for name, param in transformer.named_parameters():
+        if "patch_embedding.weight" in name:
+            print(param)
+            print(param.sum())
+            print(param.min())
+            print(param.max())
+            print(param.norm(1))
+
     vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.bfloat16)
     # Load image encoder (required for first/last frame conditioning)
     image_encoder = CLIPVisionModel.from_pretrained(model_id, subfolder="image_encoder", torch_dtype=torch.bfloat16)
@@ -347,12 +355,12 @@ if __name__ == "__main__":
         scheduler=scheduler,
         tokenizer=tokenizer,
     ).to("cuda")
-    video_path = "data/pexel/a39e78046826c99432173630feec2456fe87ca43.mp4"
+    video_path = "a39e78046826c99432173630feec2456fe87ca43.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
-    key_frames_indices = torch.Tensor([0,4,8,12,16]).to("cuda")
+    key_frames_indices = torch.Tensor([0]).to("cuda")
     key_frames_indices = key_frames_indices.unsqueeze(0)
-    key_frames = vr.get_batch([0,4,8,12,16]).to("cuda")    # [F,H,W,3]
+    key_frames = vr.get_batch([0]).to("cuda")    # [F,H,W,3]
     key_frames = key_frames.permute(0, 3, 1, 2)    # [F,3,H,W]
     key_frames = key_frames.unsqueeze(0)    # [B,F,3,H,W] B = 1
     
@@ -361,9 +369,10 @@ if __name__ == "__main__":
         prompt="",
         key_frames=key_frames,
         key_frames_indices=key_frames_indices,
+        # save_debug_video_to="first_frame.mp4",
         height=480,
         width=832,
-        num_frames=17,
+        num_frames=1,
         num_inference_steps=50,
         guidance_scale=0
     )

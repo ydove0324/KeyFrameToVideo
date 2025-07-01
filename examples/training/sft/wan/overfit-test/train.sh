@@ -15,8 +15,8 @@ export FINETRAINERS_LOG_LEVEL="DEBUG"
 BACKEND="ptd"
 
 # In this setting, I'm using 2 GPUs on a 4-GPU node for training
-NUM_GPUS=8
-CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+NUM_GPUS=4
+CUDA_VISIBLE_DEVICES="0,1,2,3"
 
 # Check the JSON files for the expected JSON format
 TRAINING_DATASET_CONFIG="examples/training/sft/wan/overfit-test/training.json"
@@ -33,7 +33,7 @@ DDP_8="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 8 --dp_shards 1 --c
 
 # Parallel arguments
 parallel_cmd=(
-  $DDP_8
+  $DDP_4
 )
 
 # Model arguments
@@ -50,7 +50,7 @@ model_cmd=(
 # (which is something we've to improve [TODO(aryan)])
 dataset_cmd=(
   --dataset_config $TRAINING_DATASET_CONFIG
-  --dataset_shuffle_buffer_size 2
+  --dataset_shuffle_buffer_size 10
   # --enable_precomputation
   # --precomputation_items 25
   # --precomputation_once
@@ -72,7 +72,8 @@ diffusion_cmd=(
 training_cmd=(
   --training_type "full-finetune"
   --seed 42
-  --batch_size 2
+  --batch_size 4
+  --image_batch_size 48
   --train_steps 2000
 #   --rank 32
 #   --lora_alpha 32
@@ -149,7 +150,6 @@ if [ "$BACKEND" == "accelerate" ]; then
 elif [ "$BACKEND" == "ptd" ]; then
 
   export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
-  
   torchrun \
     --standalone \
     --nnodes=1 \

@@ -282,7 +282,7 @@ class SFTTrainer(Trainer):
 
     def _prepare_checkpointing(self) -> None:
         parallel_backend = self.state.parallel_backend
-
+        logger.info(f"Preparing checkpointing at {self.args.output_dir}")
         def save_model_hook(state_dict: Dict[str, Any]) -> None:
             state_dict = utils.get_unwrapped_model_state_dict(state_dict)
             if parallel_backend.is_main_process:
@@ -396,7 +396,9 @@ class SFTTrainer(Trainer):
         condition_iterator: Iterable[Dict[str, Any]] = None
         latent_iterator: Iterable[Dict[str, Any]] = None
         sampler = data.ResolutionSampler(
-            batch_size=self.args.batch_size, dim_keys=self.model_specification._resolution_dim_keys
+            batch_size=self.args.batch_size, 
+            image_batch_size=getattr(self.args, 'image_batch_size', None),
+            dim_keys=self.model_specification._resolution_dim_keys
         )
         requires_gradient_step = True
         accumulated_loss = 0.0
@@ -423,14 +425,16 @@ class SFTTrainer(Trainer):
                     break
 
                 if sampler.is_ready:
-                    condition_batch, latent_batch = sampler.get_batch()
+                    (condition_batch, latent_batch), is_image_batch = sampler.get_batch()
                     condition_model_conditions = self.model_specification.collate_conditions(condition_batch)
                     latent_model_conditions = self.model_specification.collate_latents(latent_batch)
                 else:
                     continue
 
             train_state.step += 1
-            train_state.observed_data_samples += self.args.batch_size * parallel_backend._dp_degree
+            # Update observed samples based on actual batch size used
+            current_batch_size = self.args.image_batch_size if is_image_batch else self.args.batch_size
+            train_state.observed_data_samples += current_batch_size * parallel_backend._dp_degree
 
             logger.debug(f"Starting training step ({train_state.step}/{self.args.train_steps})")
 
@@ -443,7 +447,7 @@ class SFTTrainer(Trainer):
             sigmas = utils.prepare_sigmas(
                 scheduler=self.scheduler,
                 sigmas=scheduler_sigmas,
-                batch_size=self.args.batch_size,
+                batch_size=current_batch_size,
                 num_train_timesteps=self.scheduler.config.num_train_timesteps,
                 flow_weighting_scheme=self.args.flow_weighting_scheme,
                 flow_logit_mean=self.args.flow_logit_mean,

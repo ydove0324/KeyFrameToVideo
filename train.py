@@ -58,7 +58,6 @@ def main():
         # Always register video segmentation config for SFT trainers
         if training_type in [TrainingType.LORA, TrainingType.FULL_FINETUNE]:
             args.register_args(SFTVideoSegmentConfig())
-        
         # Register Wan model config when training Wan models
         if model_name == 'wan':
             args.register_args(WanModelConfig())
@@ -84,6 +83,7 @@ def main():
             revision=args.revision,
             cache_dir=args.cache_dir,
             train_added_modules_only=args.train_added_modules_only,
+            train_modules=args.train_modules,
         )
 
         if args.training_type in [TrainingType.LORA, TrainingType.FULL_FINETUNE]:

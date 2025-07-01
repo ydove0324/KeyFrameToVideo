@@ -41,6 +41,50 @@ class DistributedDataProcessorMixin:
         raise NotImplementedError("DistributedDataProcessorMixin::requires_data must be implemented by the subclass.")
 
 
+def debug_collate_fn(batch):
+    """Debug collate function to track data issues during batch collation."""
+    logger.info(f"[DEBUG] Collating batch of size: {len(batch)}")
+    
+    # Check for None values in the batch
+    if any(x is None for x in batch):
+        logger.error("[DEBUG] Found None values in batch!")
+        for i, item in enumerate(batch):
+            if item is None:
+                logger.error(f"[DEBUG] Batch item {i} is None")
+            else:
+                logger.error(f"[DEBUG] Batch item {i}: Type={type(item)}")
+                if isinstance(item, dict):
+                    logger.error(f"[DEBUG] Keys: {item.keys()}")
+                    for k, v in item.items():
+                        logger.error(f"[DEBUG] Key: {k}, Value type: {type(v)}, Value shape: {getattr(v, 'shape', 'N/A')}")
+        # Filter out None values
+        batch = [x for x in batch if x is not None]
+        if not batch:
+            raise ValueError("[DEBUG] Batch contains only None values")
+    
+    # Check structure of items in batch
+    for i, item in enumerate(batch):
+        logger.info(f"[DEBUG] Checking item {i}:")
+        if isinstance(item, dict):
+            for k, v in item.items():
+                logger.info(f"[DEBUG] Key: {k}, Value type: {type(v)}, Value shape: {getattr(v, 'shape', 'N/A')}")
+                if v is None:
+                    logger.error(f"[DEBUG] Found None value for key {k} in item {i}")
+        else:
+            logger.error(f"[DEBUG] Item {i} is not a dict: {type(item)}")
+    
+    try:
+        collated = torch.utils.data.default_collate(batch)
+        logger.info("[DEBUG] Successfully collated batch")
+        return collated
+    except Exception as e:
+        logger.error(f"[DEBUG] Collation error: {str(e)}")
+        logger.error("[DEBUG] Detailed batch content:")
+        for i, item in enumerate(batch):
+            logger.error(f"[DEBUG] Item {i}: {item}")
+        raise
+
+
 class InMemoryDistributedDataPreprocessor(DistributedDataProcessorMixin):
     def __init__(
         self, rank: int, num_items: int, processor_fn: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]]
@@ -54,6 +98,9 @@ class InMemoryDistributedDataPreprocessor(DistributedDataProcessorMixin):
         self._cached_samples = []
         self._buffer = InMemoryDataBuffer(num_items)
         self._preprocessed_iterator: Union["InMemoryDataIterable", "InMemoryOnceDataIterable"] = None
+        
+        # Add debug collate function
+        self.collate_fn = debug_collate_fn
 
     def consume(
         self,
@@ -111,11 +158,17 @@ class InMemoryDistributedDataPreprocessor(DistributedDataProcessorMixin):
         for i in range(self._num_items):
             if use_cached_samples:
                 item = self._cached_samples[i]
+                logger.info(f"[DEBUG] Using cached sample {i}, item keys: {item.keys() if item is not None else 'None'}")
             else:
                 item = next(data_iterator)
+                logger.info(f"[DEBUG] Got new item from iterator {i}, item keys: {item.keys() if item is not None else 'None'}")
                 if cache_samples:
                     self._cached_samples.append(item)
+            
+            logger.info(f"[DEBUG] Before processor_fn - data_type: {data_type}, item: {item}")
             item = self._processor_fn[data_type](**item, **components, generator=generator)
+            logger.info(f"[DEBUG] After processor_fn - processed item: {item}")
+            
             self._buffer.add(data_type, item)
 
         if drop_samples:
@@ -194,11 +247,17 @@ class PrecomputedDistributedDataPreprocessor(DistributedDataProcessorMixin):
             for i in tqdm(range(self._num_items), desc=f"Rank {self._rank}", total=self._num_items):
                 if use_cached_samples:
                     item = self._cached_samples[i]
+                    logger.info(f"[DEBUG] Using cached sample {i}, item keys: {item.keys() if item is not None else 'None'}")
                 else:
                     item = next(data_iterator)
+                    logger.info(f"[DEBUG] Got new item from iterator {i}, item keys: {item.keys() if item is not None else 'None'}")
                     if cache_samples:
                         self._cached_samples.append(item)
+                
+                logger.info(f"[DEBUG] Before processor_fn - data_type: {data_type}, item: {item}")
                 item = self._processor_fn[data_type](**item, **components, generator=generator)
+                logger.info(f"[DEBUG] After processor_fn - processed item: {item}")
+                
                 index = self._rank * self._num_items + i
                 _save_item(item, index, self._save_dir, data_type)
 
@@ -235,11 +294,17 @@ class PrecomputedDistributedDataPreprocessor(DistributedDataProcessorMixin):
             for i in tqdm(range(self._num_items), desc=f"Processing data on rank {self._rank}", total=self._num_items):
                 if use_cached_samples:
                     item = self._cached_samples[i]
+                    logger.info(f"[DEBUG] Using cached sample {i}, item keys: {item.keys() if item is not None else 'None'}")
                 else:
                     item = next(data_iterator)
+                    logger.info(f"[DEBUG] Got new item from iterator {i}, item keys: {item.keys() if item is not None else 'None'}")
                     if cache_samples:
                         self._cached_samples.append(item)
+                
+                logger.info(f"[DEBUG] Before processor_fn - data_type: {data_type}, item: {item}")
                 item = self._processor_fn[data_type](**item, **components, generator=generator)
+                logger.info(f"[DEBUG] After processor_fn - processed item: {item}")
+                
                 index = self._rank * self._num_items + i
                 _save_item(item, index, self._save_dir, data_type)
 

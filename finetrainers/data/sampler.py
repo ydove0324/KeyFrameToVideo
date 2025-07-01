@@ -4,22 +4,25 @@ import torch
 
 
 class ResolutionSampler:
-    def __init__(self, batch_size: int = 1, dim_keys: Dict[str, Tuple[int, ...]] = None) -> None:
+    def __init__(self, batch_size: int = 1, image_batch_size: int = None, dim_keys: Dict[str, Tuple[int, ...]] = None) -> None:
         self.batch_size = batch_size
+        self.image_batch_size = image_batch_size or batch_size  # Use batch_size if image_batch_size is not provided
         self.dim_keys = dim_keys
         assert dim_keys is not None, "dim_keys must be provided"
 
         self._chosen_leader_key = None
         self._unsatisfied_buckets: Dict[Tuple[int, ...], List[Dict[Any, Any]]] = {}
-        self._satisfied_buckets: List[Dict[Any, Any]] = []
+        self._satisfied_buckets: List[Tuple[List[Dict[Any, Any]], bool]] = []  # (batch, is_image_batch)
 
     def consume(self, *dict_items: Dict[Any, Any]) -> None:
         if self._chosen_leader_key is None:
             self._determine_leader_item(*dict_items)
         self._update_buckets(*dict_items)
 
-    def get_batch(self) -> List[Dict[str, Any]]:
-        return list(zip(*self._satisfied_buckets.pop(-1)))
+    def get_batch(self) -> Tuple[List[Dict[str, Any]], bool]:
+        """Returns a tuple of (batch_data, is_image_batch)"""
+        batch_data, is_image_batch = self._satisfied_buckets.pop(-1)
+        return list(zip(*batch_data)), is_image_batch
 
     @property
     def is_ready(self) -> bool:
@@ -54,5 +57,10 @@ class ResolutionSampler:
         if dims not in self._unsatisfied_buckets:
             self._unsatisfied_buckets[dims] = []
         self._unsatisfied_buckets[dims].append(dict_items)
-        if len(self._unsatisfied_buckets[dims]) == self.batch_size:
-            self._satisfied_buckets.append(self._unsatisfied_buckets.pop(dims))
+        
+        # Check if this is an image batch (first dimension is 1)
+        is_image_batch = dims[0] == 1
+        target_batch_size = self.image_batch_size if is_image_batch else self.batch_size
+        
+        if len(self._unsatisfied_buckets[dims]) == target_batch_size:
+            self._satisfied_buckets.append((self._unsatisfied_buckets.pop(dims), is_image_batch))

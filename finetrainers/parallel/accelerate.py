@@ -10,6 +10,7 @@ from diffusers.utils import is_accelerate_available
 
 from finetrainers.logging import get_logger
 from finetrainers.utils import get_device_info
+from finetrainers.data.precomputation import debug_collate_fn
 
 from .base import BaseCheckpointer, BaseParallelBackend
 
@@ -136,8 +137,14 @@ class AccelerateParallelBackend(BaseParallelBackend):
         num_workers: int = 0,
         pin_memory: bool = False,
     ) -> DataLoader:
+        # Use debug_collate_fn if available
+        collate_fn = getattr(dataset, 'collate_fn', None) or debug_collate_fn
         dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory
+            dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            pin_memory=pin_memory,
+            collate_fn=collate_fn
         )
         dataloader = self._accelerator.prepare_data_loader(dataloader)
         logger.debug("AccelerateParallelBackend::prepare_dataloader completed!")

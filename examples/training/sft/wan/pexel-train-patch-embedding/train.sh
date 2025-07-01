@@ -30,8 +30,8 @@ NUM_GPUS=8
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 
 # Check the JSON files for the expected JSON format
-TRAINING_DATASET_CONFIG="examples/training/sft/wan/pexel/training.json"
-VALIDATION_DATASET_FILE="examples/training/sft/wan/pexel/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/sft/wan/pexel-train-patch-embedding/training.json"
+VALIDATION_DATASET_FILE="examples/training/sft/wan/pexel-train-patch-embedding/validation.json"
 
 # Depending on how many GPUs you have available, choose your degree of parallelism and technique!
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -85,7 +85,7 @@ training_cmd=(
   --seed 42
   --batch_size 4
   --image_batch_size 32
-  --train_steps 4000
+  --train_steps 2000
 #   --rank 32
 #   --lora_alpha 32
 #   --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
@@ -97,6 +97,7 @@ training_cmd=(
   --checkpointing_steps 500
   --checkpointing_limit 3
   --transformer_id "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B/transformer"
+  --train_modules "patch_embedding"
   --enable_slicing
   --enable_tiling
   # --train_added_modules_only true
@@ -109,13 +110,13 @@ training_cmd=(
 # Optimizer arguments
 optimizer_cmd=(
   --optimizer "adamw"
-  --lr 1e-4
+  --lr 8e-4
   --lr_scheduler "constant_with_warmup"
   --lr_warmup_steps 500
   --lr_num_cycles 1
   --beta1 0.9
-  --beta2 0.99
-  --weight_decay 1e-4
+  --beta2 0.95
+  --weight_decay 0.02
   --epsilon 1e-8
   --max_grad_norm 1.0
 )
@@ -128,8 +129,8 @@ validation_cmd=(
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-ibq-key-frame-pexel-part2_0123-pixabay-img"
-  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pexel-part2_0123-pixabay-img"
+  --tracker_name "finetrainers-wan-ibq-key-frame-pixabay-img-train-patch-embedding"
+  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-train-patch-embedding"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "none"

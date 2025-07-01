@@ -25,6 +25,7 @@ import argparse
 import glob
 import os
 import pathlib
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import cycle
 from typing import Tuple, List
@@ -34,6 +35,10 @@ import torch.nn.functional as F
 from torchvision.io import write_video
 import decord
 from tqdm import tqdm
+
+# Flow score thresholds
+MIN_FLOW = 7
+MAX_FLOW = 32
 
 decord.bridge.set_bridge("torch")
 
@@ -145,10 +150,11 @@ def process_video(
 
         resized = resize_gpu_batch(raw, target_hw, clip_len)
         for clip in resized:
+            clip_path = str(out_dir / f"clip_{clip_idx:04d}.mp4")  # Convert Path to string
             fut = encode_pool.submit(
                 encode_clip,
                 clip,
-                out_dir / f"clip_{clip_idx:04d}.mp4",
+                clip_path,
                 fps,
             )
             futures.append(fut)
@@ -173,6 +179,7 @@ def main():
     ap.add_argument("--max-gpu-clips", type=int, default=15, help="clips per GPU batch (<=15 safe ~255 frames)")
     ap.add_argument("--threads", type=int, default=8, help="parallel encoders per video")
     ap.add_argument("--gpus", default="0", help="comma‑separated CUDA indices, e.g. 0,1")
+    ap.add_argument("--flow_stats", help="Path to the JSONL file containing flow statistics")
     args = ap.parse_args()
 
     gpu_ids = parse_gpus(args.gpus) if torch.cuda.is_available() else []
@@ -188,6 +195,31 @@ def main():
     if not vids:
         print("No new videos to process.")
         return
+
+    # Filter videos by flow score if stats file is provided
+    if args.flow_stats and os.path.exists(args.flow_stats):
+        print(f"Loading flow statistics from: {args.flow_stats}")
+        flow_stats = {}
+        with open(args.flow_stats, 'r') as f:
+            for line in f:
+                item = json.loads(line.strip())
+                flow_stats[os.path.basename(item["path"])] = item["flow_data"]["mean_flow"]
+        
+        filtered_vids = []
+        for vid in vids:
+            vid_name = os.path.basename(vid)
+            if vid_name in flow_stats:
+                mean_flow = flow_stats[vid_name]
+                if MIN_FLOW <= mean_flow <= MAX_FLOW:
+                    filtered_vids.append(vid)
+                else:
+                    print(f"Skipping {vid_name} - flow score {mean_flow:.2f} outside range [{MIN_FLOW}, {MAX_FLOW}]")
+        vids = filtered_vids
+        print(f"After flow filtering: {len(vids)} videos remaining")
+        
+        if not vids:
+            print("No videos to process after flow filtering.")
+            return
 
     print(f"🚀 {len(vids)} videos → GPUs {gpu_ids} (clips/batch={args.max_gpu_clips})")
     gpu_cycle = cycle(gpu_ids)

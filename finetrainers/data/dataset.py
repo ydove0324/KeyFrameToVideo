@@ -23,6 +23,8 @@ from finetrainers import functional as FF
 from finetrainers.logging import get_logger
 from finetrainers.utils import find_files
 from finetrainers.utils.import_utils import is_datasets_version
+import glob
+import os
 
 
 import decord  # isort:skip
@@ -436,8 +438,15 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
 
         self.dataset_name = dataset_name
         self.infinite = infinite
-
-        data = datasets.load_dataset(dataset_name, split="train", streaming=True)
+        self.tar_files = sorted(glob.glob(os.path.join(dataset_name, "*.tar")))
+        self.using_tar_files = False
+        self.using_parquet_files = False
+        if len(self.tar_files) == 0:
+            data = datasets.load_dataset(dataset_name,split="train",streaming=True)
+            self.using_parquet_files = True
+        else:
+            self.using_tar_files = True
+            data = datasets.load_dataset("webdataset",data_files={"train": self.tar_files},split="train",streaming=True)
 
         if column_names == "__auto__":
             if weights == -1:
@@ -456,7 +465,10 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                         f"Caption columns {caption_columns} not found in the dataset. Available columns are: {data.column_names}"
                     )
         else:
-            if isinstance(column_names, str):
+            if self.using_tar_files:
+                caption_columns = [column_names]
+                weights = [1] if weights == -1 else [weights.get(column_names)]
+            elif isinstance(column_names, str):
                 if column_names not in data.column_names:
                     raise ValueError(
                         f"Caption column {column_names} not found in the dataset. Available columns are: {data.column_names}"
@@ -494,8 +506,13 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         while True:
             for sample in self._get_data_iter():
                 self._sample_index += 1
-                caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
-                sample["caption"] = sample[caption_column]
+                if self.using_tar_files:
+                    caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
+                    sample["caption"] = sample["json"][caption_column]
+                    sample.pop("json", None)
+                else:
+                    caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
+                    sample["caption"] = sample[caption_column]
                 yield sample
 
             if not self.infinite:
@@ -690,6 +707,7 @@ class IterableDatasetPreprocessingWrapper(
         drop_columns: Optional[List[str]] = None,
         reshape_mode: str = "bicubic",
         remove_common_llm_caption_prefixes: bool = False,
+        p_drop_caption: float = 0.0,
         **kwargs,
     ):
         super().__init__()
@@ -703,6 +721,7 @@ class IterableDatasetPreprocessingWrapper(
         self.drop_columns = drop_columns or []
         self.reshape_mode = reshape_mode
         self.remove_common_llm_caption_prefixes = remove_common_llm_caption_prefixes
+        self.p_drop_caption = p_drop_caption
 
         logger.info(
             f"Initializing IterableDatasetPreprocessingWrapper for the dataset with the following configuration:\n"
@@ -765,11 +784,12 @@ class IterableDatasetPreprocessingWrapper(
             if self.id_token is not None:
                 caption = f"{self.id_token} {caption}"
             sample["caption"] = caption
+            if random.random() < self.p_drop_caption:
+                sample["caption"] = ""
 
             # Handle key_frames_indices if present (similar to ValidationDataset)
             if sample.get("key_frames_indices", None) is not None:
                 sample["key_frames_indices"] = torch.tensor(sample["key_frames_indices"])
-
             yield sample
 
     def load_state_dict(self, state_dict):

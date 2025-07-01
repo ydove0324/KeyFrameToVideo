@@ -146,7 +146,7 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         Returns:
             Tuple of (quant, qloss, indices) tensors
         """
-        MAX_BATCH_SIZE = 2
+        MAX_BATCH_SIZE = 4
         total_size = images.size(0)
         
         # Initialize lists to store results
@@ -345,6 +345,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
         cache_dir: Optional[str] = None,
         condition_model_processors: List[ProcessorMixin] = None,
         latent_model_processors: List[ProcessorMixin] = None,
+        train_modules: List[str] = None,
         **kwargs,
     ) -> None:  # 在一开始的时候把 Conv3D 添加一层，然后再看看 cross-attn 在哪加入
         super().__init__(
@@ -372,6 +373,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
 
         self.condition_model_processors = condition_model_processors
         self.latent_model_processors = latent_model_processors
+        self.train_modules = train_modules
 
     @property
     def _resolution_dim_keys(self):
@@ -443,7 +445,14 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
                 torch_dtype=self.transformer_dtype,
                 **common_kwargs,
             )
-        
+
+        def wrap_trainable_modules():
+            if self.train_modules:
+                self.set_modules_trainable(transformer, self.train_modules)
+            else:
+                transformer.requires_grad = True
+            return transformer
+        transformer = wrap_trainable_modules()
         scheduler = FlowMatchEulerDiscreteScheduler()
 
         return {"transformer": transformer, "scheduler": scheduler}
@@ -539,6 +548,10 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
             first_frame_idx = torch.zeros(batch_size, 1, dtype=torch.long, device=video.device)
             last_frame_idx = torch.full((batch_size, 1), num_frames - 1, dtype=torch.long, device=video.device)
             key_frames_indices = torch.cat([first_frame_idx, last_frame_idx], dim=1)  # [B, 2]
+        if video is None and image is not None:
+            video = image.unsqueeze(1) # frame dimension to make [B,1,C,H,W]
+            key_frames_indices = torch.zeros(image.shape[0], 1, dtype=torch.long, device=image.device) # [B,1] all zeros
+            image = None
         
         conditions = {
             "vae": vae,
@@ -649,7 +662,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
             print(f"video shape: {video.shape}")
             with torch.no_grad():
                 no_img_nosiy_latents = torch.cat([_noisy_latents, torch.zeros_like(latent_condition_mask), torch.zeros_like(latent_condition)], dim=1)
-                # latent_model_conditions["hidden_states"] = no_img_nosiy_latents.to(latents)
+                latent_model_conditions["hidden_states"] = no_img_nosiy_latents.to(latents)
                 # latent_model_conditions["encoder_hidden_states_image"] = torch.zeros_like(latent_model_conditions["encoder_hidden_states_image"])
                 pred_no_img = transformer(
                     **latent_model_conditions,
@@ -759,4 +772,27 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
         latents_std = latents_std.view(1, -1, 1, 1, 1).to(device=latents.device)
         latents = ((latents.float() - latents_mean) * latents_std).to(latents)
         return latents
+
+    def set_modules_trainable(self, transformer: WanTransformer3DModel, module_patterns: List[str]) -> None:
+        """Set requires_grad for parameters based on module name patterns.
+        Only parameters containing any of the patterns in their names will be set to trainable.
+        
+        Args:
+            transformer (WanTransformer3DModel): The transformer model to modify
+            module_patterns (List[str]): List of patterns to match against parameter names
+        """
+        # First set all parameters to non-trainable
+        for param in transformer.parameters():
+            param.requires_grad = False
+            
+        # Then set specified modules to trainable
+        for name, param in transformer.named_parameters():
+            if any(pattern in name for pattern in module_patterns):
+                param.requires_grad = True
+        
+        # Log number of trainable parameters
+        trainable_params = sum(p.numel() for p in transformer.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in transformer.parameters())
+        logger.info(f"Number of trainable parameters: {trainable_params:,} out of {total_params:,}")
+        logger.info(f"Training modules matching patterns: {module_patterns}")
 

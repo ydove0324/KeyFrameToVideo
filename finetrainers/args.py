@@ -146,6 +146,9 @@ class BaseArgs:
         Data type for the transformer model.
     vae_dtype (`torch.dtype`, defaults to `torch.bfloat16`):
         Data type for the VAE model.
+    train_modules (`List[str]`, defaults to `None`):
+        List of module names to train. If provided, only these modules will be set to trainable.
+        For example: ["patch_embedding"] will only train modules containing "patch_embedding" in their name.
     layerwise_upcasting_modules (`List[str]`, defaults to `[]`):
         Modules that should have fp8 storage weights but higher precision computation. Choose between ['transformer'].
     layerwise_upcasting_storage_dtype (`torch.dtype`, defaults to `float8_e4m3fn`):
@@ -256,6 +259,8 @@ class BaseArgs:
         A seed for reproducible training.
     batch_size (`int`, defaults to `1`):
         Per-device batch size.
+    image_batch_size (`int`, defaults to `1`):
+        Per-device image batch size.
     train_steps (`int`, defaults to `1000`):
         Total number of training steps to perform.
     max_data_samples (`int`, defaults to `2**64`):
@@ -389,6 +394,7 @@ class BaseArgs:
     text_encoder_3_dtype: torch.dtype = torch.bfloat16
     transformer_dtype: torch.dtype = torch.bfloat16
     vae_dtype: torch.dtype = torch.bfloat16
+    train_modules: List[str] = None
     layerwise_upcasting_modules: List[str] = []
     layerwise_upcasting_storage_dtype: torch.dtype = torch.float8_e4m3fn
     # fmt: off
@@ -424,6 +430,7 @@ class BaseArgs:
     training_type: str = None
     seed: int = 42
     batch_size: int = 1
+    image_batch_size: int = 1
     train_steps: int = 1000
     max_data_samples: int = 2**64
     gradient_accumulation_steps: int = 1
@@ -517,6 +524,7 @@ class BaseArgs:
             "text_encoder_3_dtype": self.text_encoder_3_dtype,
             "transformer_dtype": self.transformer_dtype,
             "vae_dtype": self.vae_dtype,
+            "train_modules": self.train_modules,
             "layerwise_upcasting_modules": self.layerwise_upcasting_modules,
             "layerwise_upcasting_storage_dtype": self.layerwise_upcasting_storage_dtype,
             "layerwise_upcasting_skip_modules_pattern": self.layerwise_upcasting_skip_modules_pattern,
@@ -556,6 +564,7 @@ class BaseArgs:
             "training_type": self.training_type,
             "seed": self.seed,
             "batch_size": self.batch_size,
+            "image_batch_size": self.image_batch_size,
             "train_steps": self.train_steps,
             "max_data_samples": self.max_data_samples,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
@@ -743,6 +752,7 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--text_encoder_3_dtype", type=str, default="bf16")
     parser.add_argument("--transformer_dtype", type=str, default="bf16")
     parser.add_argument("--vae_dtype", type=str, default="bf16")
+    parser.add_argument("--train_modules", type=str, default=None, nargs="+")
     parser.add_argument("--layerwise_upcasting_modules", type=str, default=[], nargs="+", choices=["transformer"])
     parser.add_argument(
         "--layerwise_upcasting_storage_dtype",
@@ -797,6 +807,7 @@ def _add_training_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--image_batch_size", type=int, default=1)
     parser.add_argument("--train_steps", type=int, default=1000)
     parser.add_argument("--max_data_samples", type=int, default=2**64)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
@@ -915,6 +926,7 @@ def _map_to_args_type(args: Dict[str, Any]) -> BaseArgs:
     result_args.text_encoder_3_dtype = _DTYPE_MAP[args.text_encoder_3_dtype]
     result_args.transformer_dtype = _DTYPE_MAP[args.transformer_dtype]
     result_args.vae_dtype = _DTYPE_MAP[args.vae_dtype]
+    result_args.train_modules = args.train_modules
     result_args.layerwise_upcasting_modules = args.layerwise_upcasting_modules
     result_args.layerwise_upcasting_storage_dtype = _DTYPE_MAP[args.layerwise_upcasting_storage_dtype]
     result_args.layerwise_upcasting_skip_modules_pattern = args.layerwise_upcasting_skip_modules_pattern
@@ -948,6 +960,7 @@ def _map_to_args_type(args: Dict[str, Any]) -> BaseArgs:
     result_args.training_type = args.training_type
     result_args.seed = args.seed
     result_args.batch_size = args.batch_size
+    result_args.image_batch_size = args.image_batch_size
     result_args.train_steps = args.train_steps
     result_args.max_data_samples = args.max_data_samples
     result_args.gradient_accumulation_steps = args.gradient_accumulation_steps
