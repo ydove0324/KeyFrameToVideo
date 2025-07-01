@@ -241,6 +241,7 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         # First reshape key_frames to combine batch and frame dimensions
         key_frames = key_frames.view(B * F, 3, key_frames.shape[3], key_frames.shape[4])
         
+        
         # Resize key_frames (already tensor) and normalize
         key_frames = (key_frames.float() / 255.0 - 0.5) / 0.5  # Normalize to [-1, 1] if input is [0, 255]
         key_frames = func_F.interpolate(key_frames, size=(height, width), mode='bilinear', align_corners=False)
@@ -248,6 +249,7 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         key_frames_quants, key_frames_qloss, _ = self._ibq_encode(key_frames) # [B*F',256,H/16,W/16]
         key_frames_quants = key_frames_quants.view(B, F, 256, height//16, width//16) # Reshape back to [B,F',256,H/16,W/16]
         latent_condition = self._quant_to_3d_latent(key_frames_quants, key_frames_indices, num_frames) # [B,256,F,H/8,W/8]
+
         
 
         # Create mask with same shape as latent condition, initialized to zeros
@@ -326,11 +328,14 @@ if __name__ == "__main__":
     transformer = WanTransformer3DModel.from_pretrained(transformer_path,subfolder="transformer", torch_dtype=torch.bfloat16)
     for name, param in transformer.named_parameters():
         if "patch_embedding.weight" in name:
-            print(param)
-            print(param.sum())
-            print(param.min())
-            print(param.max())
-            print(param.norm(1))
+            print(param.shape)
+
+            part_param = param[:,16:,:]
+            print(part_param.sum())
+            print(part_param.min())
+            print(part_param.max())
+            print(part_param.norm(1))
+            print(part_param.norm(1) / param.norm(1))
 
     vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.bfloat16)
     # Load image encoder (required for first/last frame conditioning)
@@ -339,13 +344,19 @@ if __name__ == "__main__":
     text_encoder = UMT5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_id, subfolder="tokenizer")
 
-    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
+    # encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
     tokenize_path = "/share/project/zhangfan/weights/Emu3.5-Tokenizer/IBQ-XL-f16c131k-FI"
     config_name = "fusimage_ibqgan_xl_131072_siglip.yaml"
     config = OmegaConf.load(os.path.join(tokenize_path, config_name))
 
     # Initialize model with config
     ibq_model = IBQ(**config.model.init_args).to(dtype=torch.bfloat16)
+    ckpt_name = "fusionimage_256_XL_f16c131k.ckpt"
+    ckpt = torch.load(os.path.join(tokenize_path, ckpt_name), weights_only=True)
+
+    # Load state dict
+    ibq_model.load_state_dict(ckpt["state_dict"])
+    ibq_model.to("cuda")
     scheduler =  FlowMatchEulerDiscreteScheduler()
     pipe = WanIBQKeyFrame2VideoPipeline(
         text_encoder=text_encoder,
@@ -355,7 +366,7 @@ if __name__ == "__main__":
         scheduler=scheduler,
         tokenizer=tokenizer,
     ).to("cuda")
-    video_path = "a39e78046826c99432173630feec2456fe87ca43.mp4"
+    video_path = "validate_video/0CWZMaN4uAE_s001.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
     key_frames_indices = torch.Tensor([0]).to("cuda")
@@ -369,11 +380,11 @@ if __name__ == "__main__":
         prompt="",
         key_frames=key_frames,
         key_frames_indices=key_frames_indices,
-        # save_debug_video_to="first_frame.mp4",
+        save_debug_video_to="first_frame.mp4",
         height=480,
         width=832,
         num_frames=1,
-        num_inference_steps=50,
+        num_inference_steps=100,
         guidance_scale=0
     )
     # flow_shift = 3.0  # 5.0 for 720P, 3.0 for 480P

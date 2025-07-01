@@ -62,7 +62,7 @@ def reconstruct_image(quant, model):
     dec = model.decode(quant)
     image = torch.clamp(dec + 1.0, 0, 2) * 127.5
     image = image.squeeze(0)                # Remove batch dimension: (c, h, w)
-    image = image.detach().cpu().numpy()    # Shape: (c, h, w)
+    image = image.detach().cpu().float().numpy()    # Shape: (c, h, w)
     image = image.transpose(1, 2, 0)        # Change to HWC format: (h, w, c)
     image = Image.fromarray(image.astype(np.uint8))
     return image

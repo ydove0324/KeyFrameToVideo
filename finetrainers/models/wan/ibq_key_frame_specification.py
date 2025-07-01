@@ -418,6 +418,11 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
         config_name = "fusimage_ibqgan_xl_131072_siglip.yaml"
         config = OmegaConf.load(os.path.join(tokenize_path, config_name))
         ibq_model = IBQ(**config.model.init_args).to(dtype=torch.bfloat16)
+        ckpt_name = "fusionimage_256_XL_f16c131k.ckpt"
+        ckpt = torch.load(os.path.join(tokenize_path, ckpt_name), weights_only=True)
+
+        # Load state dict
+        ibq_model.load_state_dict(ckpt["state_dict"])
 
         # Ensure IBQ model uses the same device allocation pattern as other models
         # The device will be set later by the trainer's _move_components_to_device method

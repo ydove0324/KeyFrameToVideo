@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
     tokenizer = model
     import decord
-    video_path = "_tmp/153d41263275d61eb23ab1da1215d50b2751021d_clip0000.mp4"
+    video_path = "validate_video/0CWZMaN4uAE_s001.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
     first_frame = vr.get_batch([0])  # Shape: (1, H, W, 3)
