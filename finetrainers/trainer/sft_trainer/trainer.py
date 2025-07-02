@@ -652,8 +652,8 @@ class SFTTrainer(Trainer):
                     pipeline=pipeline, generator=generator, **validation_data
                 )
 
-            if dp_local_rank != 0:
-                continue
+            # if dp_local_rank != 0:
+            #     continue
 
             PROMPT = validation_data["prompt"]
             IMAGE = validation_data.get("image", None)
@@ -705,7 +705,7 @@ class SFTTrainer(Trainer):
         # Remove all hooks that might have been added during pipeline initialization to the models
         pipeline.remove_all_hooks()
         del pipeline
-        module_names = ["text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder", "image_processor", "vae"]
+        module_names = ["text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder", "image_processor", "vae","ibq_model"]
         if self.args.enable_precomputation:
             self._delete_components(module_names)
         torch.cuda.reset_peak_memory_stats(parallel_backend.device)

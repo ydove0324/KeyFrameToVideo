@@ -11,7 +11,7 @@ NUM_GPUS=${NUM_GPUS:-8}
 JOB_ID=${JOB_ID:-"1"}
 
 # Environment variables
-export WANDB_MODE="offline"
+export WANDB_MODE="online"
 export NCCL_SOCKET_IFNAME=eth0
 export NCCL_IB_DISABLE=0
 export NCCL_IB_CUDA_SUPPORT=1
@@ -74,6 +74,7 @@ training_cmd=(
   --train_steps 4000
   --gradient_accumulation_steps 8
   --gradient_checkpointing
+  --resume_from_checkpoint "2000"
   --checkpointing_steps 500
   --checkpointing_limit 3
   --transformer_id "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B/transformer"
@@ -107,7 +108,7 @@ miscellaneous_cmd=(
   --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img"
   --init_timeout 600
   --nccl_timeout 600
-  --report_to "none"
+  --report_to "wandb"
 )
 
 # Execute training with torchrun

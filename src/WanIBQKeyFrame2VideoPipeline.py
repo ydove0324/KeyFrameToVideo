@@ -214,6 +214,7 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         num_frames: int = 49,
         num_inference_steps: int = 50,
         generator: Optional[torch.Generator] = None,
+        seed: Optional[int] = None,  # Added seed parameter
         save_debug_video_to: Optional[str] = None,  # path or None
         guidance_scale: float = 5.0,
         *args,
@@ -273,7 +274,13 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         # --------------------------------------------------------------
         # 3. Initialise noisy latents & set timesteps
         # --------------------------------------------------------------
-        latents = torch.randn(B, 16, (num_frames - 1) // 4 + 1, height // 8, width // 8, device=device, dtype=dtype)    # 16 vae channels
+        # Set generator seed if provided
+        if seed is not None:
+            if generator is None:
+                generator = torch.Generator(device=device)
+            generator.manual_seed(seed)
+
+        latents = torch.randn(B, 16, (num_frames - 1) // 4 + 1, height // 8, width // 8, device=device, dtype=dtype, generator=generator)    # 16 vae channels
         self.scheduler.set_timesteps(num_inference_steps, device=device)
 
         # --------------------------------------------------------------
@@ -282,12 +289,20 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
 
         for i, t in enumerate(tqdm(self.scheduler.timesteps, desc="inference", unit="step")):
             lat_in = torch.cat([latents, latent_condition_mask, latent_condition], dim=1)
+            un_cond_lat_in = torch.cat([latents, torch.zeros_like(latent_condition_mask), torch.zeros_like(latent_condition)], dim=1)
             transformer_out = self.transformer(
                 hidden_states=lat_in,
                 encoder_hidden_states=encoder_hidden_states,
                 timestep=t.unsqueeze(0).long(),
                 return_dict=False,
             )[0]
+            un_cond_transformer_out = self.transformer(
+                hidden_states=un_cond_lat_in,
+                encoder_hidden_states=encoder_hidden_states,
+                timestep=t.unsqueeze(0).long(),
+                return_dict=False,
+            )[0]
+            transformer_out = transformer_out + guidance_scale * (transformer_out - un_cond_transformer_out)
             # uncond_transformer_out = self.transformer(
             #     hidden_states=lat_in,
             #     encoder_hidden_states=uncond_embeds,
@@ -321,7 +336,7 @@ import decord
 
 if __name__ == "__main__":
     # load your checkpoints as before …
-    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-train-patch-embedding/model_weights/002000"
+    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img/model_weights/002000"
     model_id = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 
@@ -344,7 +359,7 @@ if __name__ == "__main__":
     text_encoder = UMT5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_id, subfolder="tokenizer")
 
-    # encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
+    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
     tokenize_path = "/share/project/zhangfan/weights/Emu3.5-Tokenizer/IBQ-XL-f16c131k-FI"
     config_name = "fusimage_ibqgan_xl_131072_siglip.yaml"
     config = OmegaConf.load(os.path.join(tokenize_path, config_name))
@@ -377,7 +392,8 @@ if __name__ == "__main__":
     
     
     video = pipe(
-        prompt="",
+        encoder_hidden_states=encoder_hidden_states,
+        seed=42,
         key_frames=key_frames,
         key_frames_indices=key_frames_indices,
         save_debug_video_to="first_frame.mp4",
@@ -385,7 +401,7 @@ if __name__ == "__main__":
         width=832,
         num_frames=1,
         num_inference_steps=100,
-        guidance_scale=0
+        guidance_scale=3
     )
     # flow_shift = 3.0  # 5.0 for 720P, 3.0 for 480P
     # pipe = WanPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16).to("cuda")
@@ -397,4 +413,4 @@ if __name__ == "__main__":
     #     num_frames=49,
     #     guidance_scale=0
     # ).frames[0]
-    export_to_video(video, "_tmp_test.mp4", fps=16)
+    export_to_video(video, "cfg3.mp4", fps=16)
