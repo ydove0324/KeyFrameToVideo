@@ -330,7 +330,7 @@ class SFTTrainer(Trainer):
         if resume_from_checkpoint == "latest":
             resume_from_checkpoint = -1
         if resume_from_checkpoint is not None:
-            self.checkpointer.load(resume_from_checkpoint,disableDataloader=True)   # TODO: 这里需要改
+            self.checkpointer.load(resume_from_checkpoint, disableDataloader=self.args.disable_dataloader_resume)   # Use args parameter
 
     def _train(self,prof=None) -> None:
         logger.info("Starting training")

@@ -131,10 +131,10 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
             - mask: The conditioning frame mask for the key frames.
     """
 
-    def __init__(self, output_names: List[str]):
+    def __init__(self, output_names: List[str],*,return_hidden_states: bool = False):
         super().__init__()
         self.output_names = output_names
-        assert len(self.output_names) == 2
+        self.return_hidden_states = return_hidden_states
 
     def _ibq_encode(self, ibq_model, images: torch.Tensor):
         """Encode images using IBQ model with batch processing.
@@ -243,6 +243,11 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         # IBQ encode the key frames
         key_frames_quants, _, _ = self._ibq_encode(ibq_model, key_frames)  # [B*_F, 256, H/16, W/16]
         key_frames_quants = key_frames_quants.view(B, _F, 256, H//16,W//16)  # [B, _F, 256, H/16, W/16]
+        if self.return_hidden_states:
+            # Reshape to [B, 256, (H/16 * W/16 * _F)]
+            ibq_encode_hidden_states = key_frames_quants.permute(0, 2, 1, 3, 4).flatten(2)
+            ibq_encode_hidden_states = ibq_encode_hidden_states.permute(0, 2, 1)    # [B,F'*H/16*W/16,256]
+            ibq_encode_hidden_states = ibq_encode_hidden_states.to(device=device, dtype=dtype)
         
         # Convert to 3D latents
         ibq_latents = self._quant_to_3d_latent(key_frames_quants, key_frames_indices, F)  # [B, 256, (num_frames-1)//4+1, H/8, W/8]
@@ -264,11 +269,17 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
             ibq_latents.shape[-2],
             ibq_latents.shape[-1],
         ).transpose(1, 2)
-
-        return {
-            self.output_names[0]: ibq_latents,
-            self.output_names[1]: latent_condition_mask,
-        }
+        if self.return_hidden_states:
+            return {
+                self.output_names[0]: ibq_latents,
+                self.output_names[1]: latent_condition_mask,
+                self.output_names[2]: ibq_encode_hidden_states
+            }
+        else:
+            return {
+                self.output_names[0]: ibq_latents,
+                self.output_names[1]: latent_condition_mask,
+            }
 
 
 class WanImageEncodeProcessor(ProcessorMixin):
@@ -365,11 +376,20 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
             condition_model_processors = [T5Processor(["encoder_hidden_states", "__drop__"])]
         if latent_model_processors is None:             # ATTN! TODO, 搞清楚这里是怎么设计的
             latent_model_processors = [WanLatentEncodeProcessor(["latents", "latents_mean", "latents_std"])]
-            latent_model_processors.append(
-                WanImageConditioningIBQLatentEncodeProcessor(
-                    ["ibq_latent_condition", "latent_condition_mask"]
+            if self.transformer_config.get("image_dim", None) is None:
+                latent_model_processors.append(
+                    WanImageConditioningIBQLatentEncodeProcessor(
+                        ["ibq_latent_condition", "latent_condition_mask"],
+                        return_hidden_states=False
+                    )
                 )
-            )
+            else:
+                latent_model_processors.append(
+                    WanImageConditioningIBQLatentEncodeProcessor(
+                        ["ibq_latent_condition", "latent_condition_mask","encoder_hidden_states_image"],
+                        return_hidden_states=True
+                    )
+                )
 
         self.condition_model_processors = condition_model_processors
         self.latent_model_processors = latent_model_processors
@@ -617,7 +637,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
         noisy_latents = torch.cat([noisy_latents, latent_condition_mask, latent_condition], dim=1)
 
         latent_model_conditions["hidden_states"] = noisy_latents.to(latents)
-        pred = transformer(
+        pred = transformer(     # 如果有 encoder_hidden_states_image 的话，自然会把 encoder_hidden_states_image 传进去
                 **latent_model_conditions,
                 **condition_model_conditions,
                 timestep=timesteps,

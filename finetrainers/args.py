@@ -222,6 +222,9 @@ class BaseArgs:
         on the main process.
     pin_memory (`bool`, defaults to `False`):
         Whether or not to use the pinned memory setting in PyTorch dataloader. This is useful for faster data loading.
+    disable_dataloader_resume (`bool`, defaults to `False`):
+        Whether or not to disable dataloader state resumption when loading from a checkpoint.
+        If set to True, the dataloader will start from the beginning of the dataset instead of resuming from where it left off.
 
     DIFFUSION ARGUMENTS
     -------------------
@@ -413,6 +416,7 @@ class BaseArgs:
     # Dataloader arguments
     dataloader_num_workers: int = 0
     pin_memory: bool = False
+    disable_dataloader_resume: bool = False
 
     # Diffusion arguments
     flow_resolution_shifting: bool = False
@@ -545,6 +549,7 @@ class BaseArgs:
         dataloader_arguments = {
             "dataloader_num_workers": self.dataloader_num_workers,
             "pin_memory": self.pin_memory,
+            "disable_dataloader_resume": self.disable_dataloader_resume,
         }
 
         diffusion_arguments = {
@@ -781,6 +786,7 @@ def _add_dataset_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_dataloader_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dataloader_num_workers", type=int, default=0)
     parser.add_argument("--pin_memory", action="store_true")
+    parser.add_argument("--disable_dataloader_resume", action="store_true")
 
 
 def _add_diffusion_arguments(parser: argparse.ArgumentParser) -> None:
@@ -943,6 +949,7 @@ def _map_to_args_type(args: Dict[str, Any]) -> BaseArgs:
     # Dataloader arguments
     result_args.dataloader_num_workers = args.dataloader_num_workers
     result_args.pin_memory = args.pin_memory
+    result_args.disable_dataloader_resume = args.disable_dataloader_resume
 
     # Diffusion arguments
     result_args.flow_resolution_shifting = args.flow_resolution_shifting

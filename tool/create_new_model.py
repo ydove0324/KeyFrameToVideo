@@ -6,7 +6,7 @@ import json
 original_model_path = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 # 新模型保存路径
-new_pretrained_model_name_or_path = "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B"
+new_pretrained_model_name_or_path = "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B-cross-attn"
 
 # 1. 加载原始模型权重
 original_state_dict = {}
@@ -16,6 +16,8 @@ for file in ["diffusion_pytorch_model-00001-of-00002.safetensors", "diffusion_py
 # 2. 创建新模型（in_channels=276）
 config = json.load(open(f"{original_model_path}/transformer/config.json"))
 config["in_channels"] = 276
+config["added_kv_proj_dim"] = 1536
+config["image_dim"] = 256
 model = WanTransformer3DModel(**config)
 
 # 3. 手动迁移权重
@@ -31,6 +33,16 @@ for name, param in original_state_dict.items():
         else:
             # 其他层直接复制
             new_state_dict[name].copy_(param)
+for name, param in new_state_dict.items():
+    if "attn2.add_k_proj" in name:
+        new_param = new_state_dict[name]
+        new_param.zero_()
+    if "attn2.add_v_proj" in name:
+        new_param = new_state_dict[name]
+        new_param.zero_()
+    if "condition_embedder.image_embedder.ff" in name:
+        new_param = new_state_dict[name]
+        new_param.zero_()
 
 # 4. 更新新模型权重
 model.load_state_dict(new_state_dict)
@@ -47,6 +59,8 @@ save_file(new_state_dict, f"{new_pretrained_model_name_or_path}/transformer/diff
 
 # 保存配置（更新 in_channels）
 model.config.in_channels = 276
+model.config.added_kv_proj_dim = 1536
+model.config.image_dim = 256
 model.save_pretrained(new_pretrained_model_name_or_path)
 
 # # 7. 验证（可选）

@@ -98,6 +98,10 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         # Pre‑compute mean / std constants for (de)normalisation
         self._latents_mean = torch.tensor(vae.config.latents_mean)
         self._latents_std_inv = 1.0 / torch.tensor(vae.config.latents_std)
+        if self.transformer.config.get("image_dim", None) is not None:
+            self.using_cross_attn = True
+        else:
+            self.using_cross_attn = False
 
     @property
     def device(self) -> torch.device:
@@ -248,6 +252,12 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         key_frames = func_F.interpolate(key_frames, size=(height, width), mode='bilinear', align_corners=False)
         key_frames = key_frames.to(device=device, dtype=dtype) # [B*F',3,H,W]
         key_frames_quants, key_frames_qloss, _ = self._ibq_encode(key_frames) # [B*F',256,H/16,W/16]
+        if self.using_cross_attn:
+            encoder_hidden_states_image = key_frames_quants.permute(0, 2, 1, 3, 4).flatten(2)   # [B,256,F'*H/16*W/16]
+            encoder_hidden_states_image = encoder_hidden_states_image.permute(0, 2, 1)   # [B,F'*H/16*W/16,256]
+            encoder_hidden_states_image = encoder_hidden_states_image.to(device=device, dtype=dtype)
+        else:
+            encoder_hidden_states_image = None
         key_frames_quants = key_frames_quants.view(B, F, 256, height//16, width//16) # Reshape back to [B,F',256,H/16,W/16]
         latent_condition = self._quant_to_3d_latent(key_frames_quants, key_frames_indices, num_frames) # [B,256,F,H/8,W/8]
 
@@ -293,12 +303,14 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
             transformer_out = self.transformer(
                 hidden_states=lat_in,
                 encoder_hidden_states=encoder_hidden_states,
+                encoder_hidden_states_image=encoder_hidden_states_image,
                 timestep=t.unsqueeze(0).long(),
                 return_dict=False,
             )[0]
             un_cond_transformer_out = self.transformer(
                 hidden_states=un_cond_lat_in,
                 encoder_hidden_states=encoder_hidden_states,
+                encoder_hidden_states_image=encoder_hidden_states_image,
                 timestep=t.unsqueeze(0).long(),
                 return_dict=False,
             )[0]
@@ -336,7 +348,7 @@ import decord
 
 if __name__ == "__main__":
     # load your checkpoints as before …
-    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img/model_weights/002000"
+    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img/model_weights/003000"
     model_id = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 
@@ -381,7 +393,7 @@ if __name__ == "__main__":
         scheduler=scheduler,
         tokenizer=tokenizer,
     ).to("cuda")
-    video_path = "validate_video/0CWZMaN4uAE_s001.mp4"
+    video_path = "a39e78046826c99432173630feec2456fe87ca43.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
     key_frames_indices = torch.Tensor([0]).to("cuda")
@@ -401,7 +413,7 @@ if __name__ == "__main__":
         width=832,
         num_frames=1,
         num_inference_steps=100,
-        guidance_scale=3
+        guidance_scale=0
     )
     # flow_shift = 3.0  # 5.0 for 720P, 3.0 for 480P
     # pipe = WanPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16).to("cuda")
@@ -413,4 +425,4 @@ if __name__ == "__main__":
     #     num_frames=49,
     #     guidance_scale=0
     # ).frames[0]
-    export_to_video(video, "cfg3.mp4", fps=16)
+    export_to_video(video, "cfg0.mp4", fps=16)
