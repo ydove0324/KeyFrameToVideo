@@ -29,8 +29,8 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 BACKEND="ptd"
 
 # Dataset configuration
-TRAINING_DATASET_CONFIG="examples/training/sft/wan/pixabay_img_cross_attn/training.json"
-VALIDATION_DATASET_FILE="examples/training/sft/wan/pixabay_img_cross_attn/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/sft/wan/pixabay_img_pexel/training.json"
+VALIDATION_DATASET_FILE="examples/training/sft/wan/pixabay_img_pexel/validation.json"
 
 # Parallel strategy configuration
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -63,21 +63,21 @@ dataloader_cmd=(
 
 # Diffusion arguments
 diffusion_cmd=(
+  --flow_weighting_scheme "logit_normal"
 )
 
 # Training arguments
 training_cmd=(
   --training_type "full-finetune"
   --seed 42
-  --batch_size 1
-  --image_batch_size 12
-  --train_steps 5000
+  --batch_size 4
+  --image_batch_size 16
+  --train_steps 8000
   --gradient_accumulation_steps 8
   --gradient_checkpointing
-  # --resume_from_checkpoint "500"
   --checkpointing_steps 500
   --checkpointing_limit 3
-  --transformer_id "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B-cross-attn/transformer"
+  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img/model_weights/004000/transformer"
   --enable_slicing
   --enable_tiling
 )
@@ -99,13 +99,13 @@ optimizer_cmd=(
 # Validation arguments
 validation_cmd=(
   --validation_dataset_file "$VALIDATION_DATASET_FILE"
-  --validation_steps 1000000
+  --validation_steps 100000
 )
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-ibq-key-frame-pixabay-img-cross-attn"
-  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-cross-attn"
+  --tracker_name "finetrainers-wan-ibq-key-frame-pixabay-img-pexel"
+  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-pexel"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"

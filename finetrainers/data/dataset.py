@@ -39,7 +39,7 @@ MAX_PRECOMPUTABLE_ITEMS_LIMIT = 1024
 COMMON_CAPTION_FILES = ["prompt.txt", "prompts.txt", "caption.txt", "captions.txt"]
 COMMON_VIDEO_FILES = ["video.txt", "videos.txt"]
 COMMON_IMAGE_FILES = ["image.txt", "images.txt"]
-COMMON_WDS_CAPTION_COLUMN_NAMES = ["txt", "text", "caption", "captions", "short_caption", "long_caption", "prompt", "prompts", "short_prompt", "long_prompt", "description", "descriptions", "alt_text", "alt_texts", "alt_caption", "alt_captions", "alt_prompt", "alt_prompts", "alt_description", "alt_descriptions", "image_description", "image_descriptions", "image_caption", "image_captions", "image_prompt", "image_prompts", "image_alt_text", "image_alt_texts", "image_alt_caption", "image_alt_captions", "image_alt_prompt", "image_alt_prompts", "image_alt_description", "image_alt_descriptions", "video_description", "video_descriptions", "video_caption", "video_captions", "video_prompt", "video_prompts", "video_alt_text", "video_alt_texts", "video_alt_caption", "video_alt_captions", "video_alt_prompt", "video_alt_prompts", "video_alt_description"]
+COMMON_WDS_CAPTION_COLUMN_NAMES = ["txt", "text", "caption", "captions", "short_caption", "long_caption", "prompt", "prompts", "short_prompt", "long_prompt", "description", "descriptions", "alt_text", "alt_texts", "alt_caption", "alt_captions", "alt_prompt", "alt_prompts", "alt_description", "alt_descriptions", "image_description", "image_descriptions", "image_caption", "image_captions", "image_prompt", "image_prompts", "image_alt_text", "image_alt_texts", "image_alt_caption", "image_alt_captions", "image_alt_prompt", "image_alt_prompts", "image_alt_description"]
 # fmt: on
 
 
@@ -547,8 +547,15 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
 
         self.dataset_name = dataset_name
         self.infinite = infinite
-
-        data = datasets.load_dataset(dataset_name, split="train", streaming=True)
+        self.tar_files = sorted(glob.glob(os.path.join(dataset_name, "*.tar")))
+        self.using_tar_files = False
+        self.using_parquet_files = False
+        if len(self.tar_files) == 0:
+            data = datasets.load_dataset(dataset_name,split="train",streaming=True)
+            self.using_parquet_files = True
+        else:
+            self.using_tar_files = True
+            data = datasets.load_dataset("webdataset",data_files={"train": self.tar_files},split="train",streaming=True)
 
         if column_names == "__auto__":
             if weights == -1:
@@ -565,8 +572,11 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                     raise ValueError(
                         f"Caption columns {caption_columns} not found in the dataset. Available columns are: {data.column_names}"
                     )
-        else:
-            if isinstance(column_names, str):
+        else: 
+            if self.using_tar_files:
+                caption_columns = [column_names]
+                weights = [1] if weights == -1 else [weights.get(column_names)]
+            elif isinstance(column_names, str):
                 if column_names not in data.column_names:
                     raise ValueError(
                         f"Caption column {column_names} not found in the dataset. Available columns are: {data.column_names}"
@@ -604,8 +614,13 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         while True:
             for sample in self._get_data_iter():
                 self._sample_index += 1
-                caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
-                sample["caption"] = sample[caption_column]
+                if self.using_tar_files:
+                    caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
+                    sample["caption"] = sample["json"][caption_column]
+                    sample.pop("json", None)
+                else:
+                    caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
+                    sample["caption"] = sample[caption_column]
                 yield sample
 
             if not self.infinite:
@@ -800,10 +815,11 @@ class IterableDatasetPreprocessingWrapper(
 
 
 class IterableCombinedDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
-    def __init__(self, datasets: List[torch.utils.data.IterableDataset], buffer_size: int, shuffle: bool = False,prof=None):
+    def __init__(self, datasets: List[torch.utils.data.IterableDataset], weights: List[float], buffer_size: int, shuffle: bool = False,prof=None):
         super().__init__()
 
         self.datasets = datasets
+        self.weights = weights
         self.buffer_size = buffer_size
         self.shuffle = shuffle
         self.prof = prof
@@ -818,9 +834,11 @@ class IterableCombinedDataset(torch.utils.data.IterableDataset, torch.distribute
         logger.info(f"Starting IterableCombinedDataset with {len(self.datasets)} datasets")
         iterators = [iter(dataset) for dataset in self.datasets]
         buffer = []
-        per_iter = max(1, self.buffer_size // len(iterators))
-
-        for index, it in enumerate(iterators):
+        # Calculate per_iter based on weights
+        weights = [weight / sum(self.weights) for weight in self.weights]
+        per_iters = [max(1, int(self.buffer_size * weight)) for weight in weights]
+        
+        for index, (it, per_iter) in enumerate(zip(iterators, per_iters)):
             for _ in tqdm(range(per_iter), desc=f"Filling buffer from data iterator {index}"):
                 try:
                     buffer.append((it, next(it)))
@@ -871,9 +889,9 @@ def initialize_dataset(
 
 
 def combine_datasets(
-    datasets: List[torch.utils.data.IterableDataset], buffer_size: int, shuffle: bool = False,prof=None
+    datasets: List[torch.utils.data.IterableDataset], weights: List[float], buffer_size: int, shuffle: bool = False,prof=None
 ) -> torch.utils.data.IterableDataset:
-    return IterableCombinedDataset(datasets=datasets, buffer_size=buffer_size, shuffle=shuffle,prof=prof)
+    return IterableCombinedDataset(datasets=datasets, weights=weights, buffer_size=buffer_size, shuffle=shuffle,prof=prof)
 
 
 def wrap_iterable_dataset_for_preprocessing(

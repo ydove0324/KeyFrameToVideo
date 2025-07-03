@@ -300,28 +300,30 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         for i, t in enumerate(tqdm(self.scheduler.timesteps, desc="inference", unit="step")):
             lat_in = torch.cat([latents, latent_condition_mask, latent_condition], dim=1)
             un_cond_lat_in = torch.cat([latents, torch.zeros_like(latent_condition_mask), torch.zeros_like(latent_condition)], dim=1)
-            transformer_out = self.transformer(
-                hidden_states=lat_in,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_hidden_states_image=encoder_hidden_states_image,
-                timestep=t.unsqueeze(0).long(),
-                return_dict=False,
-            )[0]
-            un_cond_transformer_out = self.transformer(
-                hidden_states=un_cond_lat_in,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_hidden_states_image=encoder_hidden_states_image,
-                timestep=t.unsqueeze(0).long(),
-                return_dict=False,
-            )[0]
-            transformer_out = transformer_out + guidance_scale * (transformer_out - un_cond_transformer_out)
-            # uncond_transformer_out = self.transformer(
-            #     hidden_states=lat_in,
-            #     encoder_hidden_states=uncond_embeds,
-            #     timestep=t.unsqueeze(0).long(),
-            #     return_dict=False,
-            # )[0]
-            # transformer_out = transformer_out + guidance_scale * (transformer_out - uncond_transformer_out)
+            if guidance_scale > 0:
+                transformer_out = self.transformer(
+                    hidden_states=lat_in,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_hidden_states_image=encoder_hidden_states_image,
+                    timestep=t.unsqueeze(0).long(),
+                    return_dict=False,
+                )[0]
+                un_cond_transformer_out = self.transformer(
+                    hidden_states=un_cond_lat_in,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_hidden_states_image=encoder_hidden_states_image,
+                    timestep=t.unsqueeze(0).long(),
+                    return_dict=False,
+                )[0]
+                transformer_out = transformer_out + guidance_scale * (transformer_out - un_cond_transformer_out)
+            else:
+                transformer_out = self.transformer(
+                    hidden_states=lat_in,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_hidden_states_image=encoder_hidden_states_image,
+                    timestep=t.unsqueeze(0).long(),
+                    return_dict=False,
+                )[0]
 
             if i == 0 and save_debug_video_to is not None:
                 # save "x₀" for inspection just like the notebook
@@ -348,7 +350,7 @@ import decord
 
 if __name__ == "__main__":
     # load your checkpoints as before …
-    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img/model_weights/003000"
+    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img/model_weights/004000"
     model_id = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 

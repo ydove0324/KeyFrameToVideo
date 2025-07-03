@@ -1,0 +1,38 @@
+{
+    "datasets": [
+      {
+        "data_root": "/share/project/datasets/pixabay_img",
+        "dataset_type": "image",
+        "id_token": "",
+        "image_resolution_buckets": [
+          [480, 832],
+          [832, 480],
+          [480, 480]
+        ],
+        "reshape_mode": "bicubic",
+        "remove_common_llm_caption_prefixes": true,
+        "caption_options": {
+          "column_names": "desc"
+        },
+        "p_drop_caption": 1.0,
+        "weight": 4.0
+      },
+      {
+        "data_root": "/share/project/huangxu/video-data/pexel-clips-part2_0_filtered_webdataset",
+        "dataset_type": "video",
+        "id_token": "",
+        "video_resolution_buckets": [
+          [17, 480, 832], 
+          [17, 832, 480],
+          [17, 480, 480]
+        ],
+        "reshape_mode": "bicubic",
+        "remove_common_llm_caption_prefixes": true,
+        "caption_options": {
+          "column_names": "caption"
+        },
+        "p_drop_caption": 1.0,
+        "weight": 1.0
+      }
+    ]
+  }

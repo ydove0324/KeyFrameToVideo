@@ -1,7 +1,17 @@
+'''
+python src/validate.py \
+  --validation_file path/to/validation.json \
+  --transformer_path path/to/transformer/model \
+  --output_dir validation_results \
+  --num_gpus 8  # number of GPUs to use
+'''
 import os
-import random
-import glob
 import torch
+import torch.distributed as dist
+from torch.multiprocessing.spawn import spawn
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import Dataset
 import numpy as np
 from PIL import Image
 import decord
@@ -9,18 +19,20 @@ from pathlib import Path
 import json
 from tqdm import tqdm
 import argparse
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union
 import cv2
 
-# 导入必要的模块
-from WanKeyFrame2VideoPipeline import WanKeyFrame2VideoPipeline
-from finetrainers.models.wan.transformer_wan import WanTransformer3DModel,T2VModel2I2VModelConverter
-from diffusers import AutoencoderKLWan
-from transformers import CLIPVisionModel, CLIPImageProcessor
-from diffusers import FlowMatchEulerDiscreteScheduler
-from diffusers.utils import export_to_video
+# Import necessary modules
+from WanIBQKeyFrame2VideoPipeline import WanIBQKeyFrame2VideoPipeline
+from finetrainers.models.wan.transformer_wan import WanTransformer3DModel
+from diffusers.models.autoencoders.autoencoder_kl_wan import AutoencoderKLWan
+from transformers import CLIPVisionModel, CLIPImageProcessor, UMT5EncoderModel, AutoTokenizer
+from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
+from diffusers.utils.export_utils import export_to_video
+from src.model.ibq_tokenizer import IBQ
+from omegaconf import OmegaConf
 
-# 导入视频评估指标
+# Import video evaluation metrics
 try:
     import lpips
     LPIPS_AVAILABLE = True
@@ -28,23 +40,38 @@ except ImportError:
     LPIPS_AVAILABLE = False
     print("Warning: LPIPS not available. Install with: pip install lpips")
 
-try:
-    from pytorch_fid import fid_score
-    FID_AVAILABLE = True
-except ImportError:
-    FID_AVAILABLE = False
-    print("Warning: FID not available. Install with: pip install pytorch-fid")
-
 class VideoMetrics:
-    """视频质量评估指标计算类"""
+    """Video quality evaluation metrics calculation class"""
     
-    def __init__(self, device='cuda'):
+    def __init__(self, device: Union[str, torch.device] = 'cuda'):
         self.device = device
         if LPIPS_AVAILABLE:
             self.lpips_fn = lpips.LPIPS(net='alex').to(device)
+    
+    def calculate_metrics(self, real_video_path: str, generated_video_path: str, height: int, width: int) -> Dict[str, float]:
+        """Calculate all metrics between two videos"""
+        metrics = {}
         
-    def extract_frames_from_video_cv2(self, video_path: str) -> List[np.ndarray]:
-        """使用OpenCV从视频中提取所有帧"""
+        # Extract frames
+        real_frames = self._extract_frames(real_video_path, height, width)
+        gen_frames = self._extract_frames(generated_video_path, height, width)
+        
+        if not real_frames or not gen_frames:
+            return {
+                'lpips': -1.0,
+                'psnr': -1.0,
+                'ssim': -1.0
+            }
+        
+        # Calculate metrics
+        metrics['lpips'] = self._calculate_lpips(real_frames, gen_frames)
+        metrics['psnr'] = self._calculate_psnr(real_frames, gen_frames)
+        metrics['ssim'] = self._calculate_ssim(real_frames, gen_frames)
+        
+        return metrics
+    
+    def _extract_frames(self, video_path: str, height: int, width: int) -> List[np.ndarray]:
+        """Extract frames from video using OpenCV"""
         cap = cv2.VideoCapture(video_path)
         frames = []
         
@@ -52,583 +79,295 @@ class VideoMetrics:
             ret, frame = cap.read()
             if not ret:
                 break
-            # OpenCV读取的是BGR，转换为RGB
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.resize(frame, (width, height))
             frames.append(frame)
         
         cap.release()
         return frames
     
-    def frames_to_tensor(self, frames: List[np.ndarray]) -> torch.Tensor:
-        """将帧列表转换为tensor，归一化到[-1,1]"""
-        # frames: List[np.ndarray] with shape (H, W, C) and values in [0, 255]
-        frames_tensor = torch.stack([
-            torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
-            for frame in frames
-        ])  # Shape: (T, C, H, W)
-        
-        # 归一化到[-1, 1]
-        frames_tensor = frames_tensor * 2.0 - 1.0
-        return frames_tensor.to(self.device)
-    
-    def resize_frames(self, frames_tensor: torch.Tensor, target_size: Tuple[int, int]) -> torch.Tensor:
-        """调整帧尺寸"""
-        import torch.nn.functional as F
-        # frames_tensor: (T, C, H, W)
-        resized = F.interpolate(frames_tensor, size=target_size, mode='bilinear', align_corners=False)
-        return resized
-    
-    def calculate_frame_lpips(self, real_frame: np.ndarray, gen_frame: np.ndarray) -> float:
-        """计算两个单帧之间的LPIPS分数"""
+    def _calculate_lpips(self, real_frames: List[np.ndarray], gen_frames: List[np.ndarray]) -> float:
+        """Calculate LPIPS score between two sets of frames"""
         if not LPIPS_AVAILABLE:
             return -1.0
         
-        # 转换为tensor
-        real_tensor = self.frames_to_tensor([real_frame])  # (1, C, H, W)
-        gen_tensor = self.frames_to_tensor([gen_frame])    # (1, C, H, W)
-        
-        # 调整尺寸到相同大小
-        if real_tensor.shape != gen_tensor.shape:
-            target_size = (min(real_tensor.shape[2], gen_tensor.shape[2]), 
-                          min(real_tensor.shape[3], gen_tensor.shape[3]))
-            real_tensor = self.resize_frames(real_tensor, target_size)
-            gen_tensor = self.resize_frames(gen_tensor, target_size)
-        
-        # 计算LPIPS
-        with torch.no_grad():
-            score = self.lpips_fn(real_tensor, gen_tensor)
-            return score.item()
-    
-    def calculate_frame_psnr(self, real_frame: np.ndarray, gen_frame: np.ndarray) -> float:
-        """计算两个单帧之间的PSNR"""
-        real_frame = real_frame.astype(np.float32)
-        gen_frame = gen_frame.astype(np.float32)
-        
-        # 调整尺寸
-        if real_frame.shape != gen_frame.shape:
-            target_shape = (min(real_frame.shape[0], gen_frame.shape[0]),
-                           min(real_frame.shape[1], gen_frame.shape[1]))
-            real_frame = cv2.resize(real_frame, (target_shape[1], target_shape[0]))
-            gen_frame = cv2.resize(gen_frame, (target_shape[1], target_shape[0]))
-        
-        mse = np.mean((real_frame - gen_frame) ** 2)
-        if mse == 0:
-            return float('inf')
-        else:
-            return 20 * np.log10(255.0 / np.sqrt(mse))
-    
-    def calculate_frame_ssim(self, real_frame: np.ndarray, gen_frame: np.ndarray) -> float:
-        """计算两个单帧之间的SSIM"""
-        try:
-            from skimage.metrics import structural_similarity as ssim
-        except ImportError:
-            print("Warning: scikit-image not available. Install with: pip install scikit-image")
-            return -1.0
-        
-        # 调整尺寸
-        if real_frame.shape != gen_frame.shape:
-            target_shape = (min(real_frame.shape[0], gen_frame.shape[0]),
-                           min(real_frame.shape[1], gen_frame.shape[1]))
-            real_frame = cv2.resize(real_frame, (target_shape[1], target_shape[0]))
-            gen_frame = cv2.resize(gen_frame, (target_shape[1], target_shape[0]))
-        
-        # 转换为灰度图像计算SSIM
-        real_gray = cv2.cvtColor(real_frame, cv2.COLOR_RGB2GRAY)
-        gen_gray = cv2.cvtColor(gen_frame, cv2.COLOR_RGB2GRAY)
-        
-        score = ssim(real_gray, gen_gray, data_range=255)
-        return score
-    
-    def calculate_lpips(self, real_video_path: str, generated_video_path: str) -> float:
-        """计算两个视频之间的LPIPS分数"""
-        if not LPIPS_AVAILABLE:
-            return -1.0
-        
-        # 提取帧
-        real_frames = self.extract_frames_from_video_cv2(real_video_path)
-        gen_frames = self.extract_frames_from_video_cv2(generated_video_path)
-        
-        # 确保帧数一致
         min_frames = min(len(real_frames), len(gen_frames))
-        real_frames = real_frames[:min_frames]
-        gen_frames = gen_frames[:min_frames]
-        
-        if min_frames == 0:
-            return -1.0
-        
-        # 转换为tensor
-        real_tensor = self.frames_to_tensor(real_frames)
-        gen_tensor = self.frames_to_tensor(gen_frames)
-        
-        # 调整尺寸到相同大小
-        if real_tensor.shape != gen_tensor.shape:
-            target_size = (min(real_tensor.shape[2], gen_tensor.shape[2]), 
-                          min(real_tensor.shape[3], gen_tensor.shape[3]))
-            real_tensor = self.resize_frames(real_tensor, target_size)
-            gen_tensor = self.resize_frames(gen_tensor, target_size)
-        
-        # 计算LPIPS
         lpips_scores = []
-        with torch.no_grad():
-            for i in range(min_frames):
-                real_frame = real_tensor[i:i+1]  # (1, C, H, W)
-                gen_frame = gen_tensor[i:i+1]    # (1, C, H, W)
-                
-                score = self.lpips_fn(real_frame, gen_frame)
+        
+        for i in range(min_frames):
+            real_tensor = self._frame_to_tensor(real_frames[i])
+            gen_tensor = self._frame_to_tensor(gen_frames[i])
+            
+            with torch.no_grad():
+                score = self.lpips_fn(real_tensor, gen_tensor)
                 lpips_scores.append(score.item())
         
-        return np.mean(lpips_scores)
+        return float(np.mean(lpips_scores))
     
-    def calculate_psnr(self, real_video_path: str, generated_video_path: str) -> float:
-        """计算PSNR"""
-        real_frames = self.extract_frames_from_video_cv2(real_video_path)
-        gen_frames = self.extract_frames_from_video_cv2(generated_video_path)
-        
+    def _calculate_psnr(self, real_frames: List[np.ndarray], gen_frames: List[np.ndarray]) -> float:
+        """Calculate PSNR between two sets of frames"""
         min_frames = min(len(real_frames), len(gen_frames))
-        if min_frames == 0:
-            return -1.0
-        
         psnr_scores = []
+        
         for i in range(min_frames):
-            real_frame = real_frames[i].astype(np.float32)
-            gen_frame = gen_frames[i].astype(np.float32)
-            
-            # 调整尺寸
-            if real_frame.shape != gen_frame.shape:
-                target_shape = (min(real_frame.shape[0], gen_frame.shape[0]),
-                               min(real_frame.shape[1], gen_frame.shape[1]))
-                real_frame = cv2.resize(real_frame, (target_shape[1], target_shape[0]))
-                gen_frame = cv2.resize(gen_frame, (target_shape[1], target_shape[0]))
-            
-            mse = np.mean((real_frame - gen_frame) ** 2)
+            mse = np.mean((real_frames[i].astype(np.float32) - gen_frames[i].astype(np.float32)) ** 2)
             if mse == 0:
                 psnr = float('inf')
             else:
                 psnr = 20 * np.log10(255.0 / np.sqrt(mse))
             psnr_scores.append(psnr)
         
-        return np.mean(psnr_scores)
+        return float(np.mean(psnr_scores))
     
-    def calculate_ssim(self, real_video_path: str, generated_video_path: str) -> float:
-        """计算SSIM"""
+    def _calculate_ssim(self, real_frames: List[np.ndarray], gen_frames: List[np.ndarray]) -> float:
+        """Calculate SSIM between two sets of frames"""
         try:
             from skimage.metrics import structural_similarity as ssim
         except ImportError:
             print("Warning: scikit-image not available. Install with: pip install scikit-image")
             return -1.0
         
-        real_frames = self.extract_frames_from_video_cv2(real_video_path)
-        gen_frames = self.extract_frames_from_video_cv2(generated_video_path)
-        
         min_frames = min(len(real_frames), len(gen_frames))
-        if min_frames == 0:
-            return -1.0
-        
         ssim_scores = []
+        
         for i in range(min_frames):
-            real_frame = real_frames[i]
-            gen_frame = gen_frames[i]
-            
-            # 调整尺寸
-            if real_frame.shape != gen_frame.shape:
-                target_shape = (min(real_frame.shape[0], gen_frame.shape[0]),
-                               min(real_frame.shape[1], gen_frame.shape[1]))
-                real_frame = cv2.resize(real_frame, (target_shape[1], target_shape[0]))
-                gen_frame = cv2.resize(gen_frame, (target_shape[1], target_shape[0]))
-            
-            # 转换为灰度图像计算SSIM
-            real_gray = cv2.cvtColor(real_frame, cv2.COLOR_RGB2GRAY)
-            gen_gray = cv2.cvtColor(gen_frame, cv2.COLOR_RGB2GRAY)
-            
+            real_gray = cv2.cvtColor(real_frames[i], cv2.COLOR_RGB2GRAY)
+            gen_gray = cv2.cvtColor(gen_frames[i], cv2.COLOR_RGB2GRAY)
             score = ssim(real_gray, gen_gray, data_range=255)
             ssim_scores.append(score)
         
-        return np.mean(ssim_scores)
+        return float(np.mean(ssim_scores))
+    
+    def _frame_to_tensor(self, frame: np.ndarray) -> torch.Tensor:
+        """Convert frame to tensor normalized to [-1,1]"""
+        tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+        tensor = (tensor * 2.0 - 1.0).unsqueeze(0)
+        return tensor.to(self.device)
 
-def extract_frames_from_video(video_path, first_frame_idx=0, last_frame_idx=16):
-    """从视频中提取指定帧并转换为PIL Image"""
-    # 使用decord读取视频
-    vr = decord.VideoReader(video_path)
-    
-    # 检查帧索引是否有效
-    total_frames = len(vr)
-    if first_frame_idx >= total_frames:
-        raise ValueError(f"第一帧索引{first_frame_idx}超出视频总帧数{total_frames}")
-    if last_frame_idx >= total_frames:
-        raise ValueError(f"最后一帧索引{last_frame_idx}超出视频总帧数{total_frames}")
-    
-    # 读取指定帧
-    frame_indices = [first_frame_idx, last_frame_idx]
-    frames = vr.get_batch(frame_indices)  # torch.Tensor, shape: (2, H, W, C)
-    
-    # 将torch.Tensor转换为numpy数组
-    if isinstance(frames, torch.Tensor):
-        frames = frames.cpu().numpy()
-    
-    # 确保数据类型正确（uint8，范围0-255）
-    if frames.dtype != np.uint8:
-        # 如果是浮点数类型且在[0,1]范围内，则乘以255
-        if frames.dtype in [np.float32, np.float64] and frames.max() <= 1.0:
-            frames = (frames * 255).astype(np.uint8)
-        else:
-            frames = frames.astype(np.uint8)
-    
-    # 转换为PIL Image
-    first_pil = Image.fromarray(frames[0])
-    last_pil = Image.fromarray(frames[1])
-    
-    return first_pil, last_pil
-
-def load_pipeline(model_id: str, transformer_path: str, device: str = "cuda"):
-    """加载模型管道"""
+def load_pipeline(model_id: str, transformer_path: str, device: Union[str, torch.device] = "cuda") -> WanIBQKeyFrame2VideoPipeline:
+    """Load model pipeline"""
     print(f"Loading model from {transformer_path}...")
     
-    # 加载transformer
+    # Load components
     transformer = WanTransformer3DModel.from_pretrained(
         transformer_path, 
         subfolder="transformer", 
         torch_dtype=torch.bfloat16
     )
     
-    # 转换模型
-    converter = T2VModel2I2VModelConverter(transformer)
-    converter.convert()
-    
-    # 加载其他组件
     vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.bfloat16)
     image_encoder = CLIPVisionModel.from_pretrained(model_id, subfolder="image_encoder", torch_dtype=torch.bfloat16)
     image_processor = CLIPImageProcessor.from_pretrained(model_id, subfolder="image_processor")
+    text_encoder = UMT5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, subfolder="tokenizer")
     scheduler = FlowMatchEulerDiscreteScheduler()
     
-    # 创建管道
-    pipe = WanKeyFrame2VideoPipeline(
+    # Load IBQ model
+    tokenize_path = "/share/project/zhangfan/weights/Emu3.5-Tokenizer/IBQ-XL-f16c131k-FI"
+    config = OmegaConf.load(os.path.join(tokenize_path, "fusimage_ibqgan_xl_131072_siglip.yaml"))
+    ibq_model = IBQ(**config.model.init_args).to(dtype=torch.bfloat16)
+    ckpt = torch.load(os.path.join(tokenize_path, "fusionimage_256_XL_f16c131k.ckpt"), weights_only=True)
+    ibq_model.load_state_dict(ckpt["state_dict"])
+    ibq_model.to(device)
+    
+    # Create pipeline
+    pipe = WanIBQKeyFrame2VideoPipeline(
         transformer=transformer,
         vae=vae,
         image_encoder=image_encoder,
         image_processor=image_processor,
         scheduler=scheduler,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        ibq_model=ibq_model
     ).to(device)
     
     return pipe
 
-def get_random_videos(dataset_path: str, num_videos: int = 20) -> List[str]:
-    """从数据集中随机选择视频"""
-    video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv']
-    all_videos = []
+def extract_keyframes(video_path: str, key_frames_indices: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Extract first frame from video and prepare for pipeline"""
+    decord.bridge.set_bridge("torch")
+    vr = decord.VideoReader(video_path)
     
-    for ext in video_extensions:
-        videos = glob.glob(os.path.join(dataset_path, ext))
-        all_videos.extend(videos)
+    # Get first frame
+    key_frames = vr.get_batch(key_frames_indices).to("cuda")  # [F,H,W,3]
+    key_frames = key_frames.permute(0, 3, 1, 2)  # [F,3,H,W]
+    key_frames = key_frames.unsqueeze(0)  # [B,F,3,H,W] B = 1
     
-    if len(all_videos) < num_videos:
-        print(f"Warning: Only found {len(all_videos)} videos in {dataset_path}, requested {num_videos}")
-        return all_videos
+    key_frames_indices_tensor = torch.tensor(key_frames_indices, device="cuda")
     
-    return random.sample(all_videos, num_videos)
+    return key_frames, key_frames_indices_tensor
+
+def identity_collate(x):
+    return x
+
+def run_validation(rank, world_size, args):
+    """Run validation on a single GPU"""
+    # Set device for this process
+    device = torch.device(f"cuda:{rank}")
+    
+    # Initialize metrics calculator
+    metrics_calculator = VideoMetrics(device=device)
+    
+    # Load validation dataset
+    dataset = ValidationDataset(args.validation_file)
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False)
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=1,
+        sampler=sampler,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=identity_collate
+    )
+    
+    # Load pipeline
+    pipe = load_pipeline(args.model_id, args.transformer_path, device)
+    
+    # Load encoder hidden states
+    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to(device)
+    
+    # Create output directory with rank
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Track metrics
+    all_metrics = []
+    
+    # Run validation
+    for batch in tqdm(dataloader, desc=f"Validating (GPU {rank})", disable=rank != 0):
+        item = batch[0]  # Since batch_size=1, we take the first item
+        video_path = item["video_path"]
+        key_frames_indices = item["key_frames_indices"]
+        num_frames = item["num_frames"]
+        
+        if rank == 0:
+            print(f"Processing {video_path} on GPU {rank}")
+        
+        # Extract keyframes
+        key_frames, key_frames_indices = extract_keyframes(video_path, key_frames_indices)
+        if rank == 0:
+            print(f"Key frames: {key_frames.shape}")
+            print(f"Key frames indices: {key_frames_indices.shape}")
+        
+        # Generate video
+        generated_frames = pipe(
+            encoder_hidden_states=encoder_hidden_states,
+            key_frames=key_frames,
+            key_frames_indices=key_frames_indices,
+            height=item["height"],
+            width=item["width"],
+            num_frames=num_frames,
+            num_inference_steps=50,
+            guidance_scale=0,
+            generator=torch.Generator(device).manual_seed(42 + item["idx"])
+        )
+        if rank == 0:
+            print(f"Generated frames Successfully")
+        
+        # Save generated video
+        output_path = output_dir / f"{Path(video_path).stem}_generated.mp4"
+        export_to_video(generated_frames, str(output_path), fps=16)
+        
+        # Calculate metrics
+        metrics = metrics_calculator.calculate_metrics(
+            video_path, 
+            str(output_path),
+            height=item["height"],
+            width=item["width"]
+        )
+        if rank == 0:
+            print(f"Metrics Calculated Successfully")
+        all_metrics.append(metrics)
+        
+        if rank == 0:
+            print(f"Metrics: LPIPS={metrics['lpips']:.4f}, PSNR={metrics['psnr']:.2f}, SSIM={metrics['ssim']:.4f}")
+    
+    # Gather metrics from all processes
+    world_metrics = [None] * world_size
+    dist.all_gather_object(world_metrics, all_metrics)
+    
+    if rank == 0:
+        # Combine metrics from all processes
+        combined_metrics = []
+        for metrics_list in world_metrics:
+            combined_metrics.extend(metrics_list)
+        
+        # Calculate and save average metrics
+        avg_metrics = {
+            metric: float(np.mean([m[metric] for m in combined_metrics]))
+            for metric in ['lpips', 'psnr', 'ssim']
+        }
+        
+        std_metrics = {
+            metric: float(np.std([m[metric] for m in combined_metrics]))
+            for metric in ['lpips', 'psnr', 'ssim']
+        }
+        
+        results = {
+            'average_metrics': avg_metrics,
+            'std_metrics': std_metrics,
+            'all_metrics': combined_metrics
+        }
+        
+        # Save final results
+        with open(Path(args.output_dir) / "metrics.json", "w") as f:
+            json.dump(results, f, indent=2)
+        
+        print("\nFinal Results:")
+        print(f"LPIPS: {avg_metrics['lpips']:.4f} ± {std_metrics['lpips']:.4f}")
+        print(f"PSNR: {avg_metrics['psnr']:.2f} ± {std_metrics['psnr']:.2f}")
+        print(f"SSIM: {avg_metrics['ssim']:.4f} ± {std_metrics['ssim']:.4f}")
 
 def main():
-    # 解析命令行参数
+    # Parse arguments
     parser = argparse.ArgumentParser(description="Validate video generation models")
-    parser.add_argument("--load_from", type=str, default=None, 
-                       help="Path to test_videos.json file to load existing test video list")
+    parser.add_argument("--validation_file", type=str, required=True, help="Path to validation dataset file")
+    parser.add_argument("--model_id", type=str, default="/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers")
+    parser.add_argument("--transformer_path", type=str, required=True, help="Path to transformer model")
+    parser.add_argument("--output_dir", type=str, default="validation_results")
     args = parser.parse_args()
     
-    # 配置参数
-    model_id = "/share/project/huangxu/Wan2.1-T2V-1.3B-diffusers"
-    base_transformer_path = "/share/project/huangxu/wan-t2v-pexel-part2_0/model_weights"
+    # Get world size and rank from environment variables (set by torchrun)
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    rank = int(os.environ.get("LOCAL_RANK", 0))
+    print(f"World size: {world_size}, Rank: {rank}")
     
-    # 模型步数列表
-    model_steps = [1500, 3000, 4500, 6000, 7500, 9000, 10500, 12000]
+    dist.init_process_group("nccl")
+    torch.cuda.set_device(rank)
+    print(f"Rank {rank} initialized")
     
-    # 数据集路径
-    dataset_paths = [
-        "pexel_part2_0",
-        "pexel_part2_1"
-    ]
+    try:
+        # Run validation
+        run_validation(rank, world_size, args)
+    finally:
+        # Clean up distributed environment
+        dist.destroy_process_group()
+
+class ValidationDataset(Dataset):
+    def __init__(self, validation_file: str):
+        """Initialize the validation dataset"""
+        super().__init__()
+        with open(validation_file, 'r') as f:
+            self._data = json.load(f)["data"]
+        for item in self._data:
+            item.pop("image_path", None)
     
-    # 创建输出目录
-    output_dir = Path("validate_results")
-    output_dir.mkdir(exist_ok=True)
+    def __len__(self) -> int:
+        """Return the number of items in the dataset"""
+        return len(self._data)
     
-    # 加载encoder_hidden_states
-    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
-    
-    # 初始化视频评估指标
-    metrics = VideoMetrics(device="cuda")
-    
-    # 收集所有测试视频
-    if args.load_from:
-        # 从指定的JSON文件加载测试视频列表
-        print(f"Loading test videos from: {args.load_from}")
-        try:
-            with open(args.load_from, "r") as f:
-                test_videos_info = json.load(f)
-            
-            all_test_videos = [(video_info["path"], video_info["dataset"]) 
-                             for video_info in test_videos_info["videos"]]
-            
-            # 验证视频文件是否存在
-            valid_videos = []
-            for video_path, dataset in all_test_videos:
-                if os.path.exists(video_path):
-                    valid_videos.append((video_path, dataset))
-                else:
-                    print(f"Warning: Video file not found: {video_path}")
-            
-            all_test_videos = valid_videos
-            print(f"Loaded {len(all_test_videos)} valid test videos from JSON file")
-            
-        except Exception as e:
-            print(f"Error loading test videos from {args.load_from}: {e}")
-            print("Falling back to random selection...")
-            all_test_videos = []
-            for dataset_path in dataset_paths:
-                videos = get_random_videos(dataset_path, num_videos=20)
-                all_test_videos.extend([(video, dataset_path) for video in videos])
-    else:
-        # 随机选择测试视频
-        print("Randomly selecting test videos...")
-        all_test_videos = []
-        for dataset_path in dataset_paths:
-            videos = get_random_videos(dataset_path, num_videos=20)
-            all_test_videos.extend([(video, dataset_path) for video in videos])
-    
-    print(f"Total test videos: {len(all_test_videos)}")
-    
-    # 保存测试视频列表（如果不是从文件加载的话）
-    if not args.load_from:
-        test_videos_info = {
-            "videos": [{"path": video, "dataset": dataset} for video, dataset in all_test_videos],
-            "model_steps": model_steps
-        }
-        
-        with open(output_dir / "test_videos.json", "w") as f:
-            json.dump(test_videos_info, f, indent=2)
-        print(f"Test video list saved to: {output_dir / 'test_videos.json'}")
-    
-    # 存储所有结果
-    all_results = {}
-    
-    # 对每个模型步数进行测试
-    for step in model_steps:
-        step_str = f"{step:06d}"
-        transformer_path = os.path.join(base_transformer_path, step_str)
-        
-        if not os.path.exists(transformer_path):
-            print(f"Warning: Model path {transformer_path} does not exist, skipping...")
-            continue
-        
-        print(f"\n{'='*60}")
-        print(f"Testing model step: {step} ({step_str})")
-        print(f"{'='*60}")
-        
-        # 创建该步数的输出目录
-        step_output_dir = output_dir / f"step_{step_str}"
-        step_output_dir.mkdir(exist_ok=True)
-        
-        # 加载模型
-        try:
-            pipe = load_pipeline(model_id, transformer_path)
-        except Exception as e:
-            print(f"Failed to load model for step {step}: {e}")
-            continue
-        
-        step_results = {
-            "step": step,
-            "videos": [],
-            "summary": {}
-        }
-        
-        # 对每个测试视频进行生成和评估
-        for video_idx, (video_path, dataset_name) in enumerate(tqdm(all_test_videos, desc=f"Processing videos for step {step}")):
-            try:
-                # 提取第一帧和最后一帧
-                first_pil, last_pil = extract_frames_from_video(video_path, first_frame_idx=0, last_frame_idx=16)
-                
-                # 生成视频
-                frames = pipe(
-                    encoder_hidden_states=encoder_hidden_states,
-                    first_image=first_pil,
-                    last_image=last_pil,
-                    height=480,
-                    width=832,
-                    num_frames=17,
-                    num_inference_steps=50,
-                    generator=torch.Generator(device="cuda").manual_seed(42),
-                )
-                
-                # 保存生成的视频
-                video_name = os.path.basename(video_path).replace('.mp4', '')
-                output_video_path = step_output_dir / f"{dataset_name}_{video_name}_generated.mp4"
-                export_to_video(frames, str(output_video_path), fps=16)
-                
-                # 计算整体视频评估指标
-                lpips_score = metrics.calculate_lpips(video_path, str(output_video_path))
-                psnr_score = metrics.calculate_psnr(video_path, str(output_video_path))
-                ssim_score = metrics.calculate_ssim(video_path, str(output_video_path))
-                
-                # 计算首帧和尾帧的指标
-                real_frames = metrics.extract_frames_from_video_cv2(video_path)
-                gen_frames = metrics.extract_frames_from_video_cv2(str(output_video_path))
-                
-                first_frame_metrics = {"lpips": -1.0, "psnr": -1.0, "ssim": -1.0}
-                last_frame_metrics = {"lpips": -1.0, "psnr": -1.0, "ssim": -1.0}
-                
-                if len(real_frames) > 0 and len(gen_frames) > 0:
-                    # 首帧指标
-                    first_frame_metrics["lpips"] = metrics.calculate_frame_lpips(real_frames[0], gen_frames[0])
-                    first_frame_metrics["psnr"] = metrics.calculate_frame_psnr(real_frames[0], gen_frames[0])
-                    first_frame_metrics["ssim"] = metrics.calculate_frame_ssim(real_frames[0], gen_frames[0])
-                    
-                    # 尾帧指标（取最后一帧）
-                    if len(real_frames) > 1 and len(gen_frames) > 1:
-                        last_real_idx = min(len(real_frames) - 1, 16)  # 对应extract_frames_from_video中的last_frame_idx=16
-                        last_gen_idx = min(len(gen_frames) - 1, 16)
-                        last_frame_metrics["lpips"] = metrics.calculate_frame_lpips(real_frames[last_real_idx], gen_frames[last_gen_idx])
-                        last_frame_metrics["psnr"] = metrics.calculate_frame_psnr(real_frames[last_real_idx], gen_frames[last_gen_idx])
-                        last_frame_metrics["ssim"] = metrics.calculate_frame_ssim(real_frames[last_real_idx], gen_frames[last_gen_idx])
-                
-                video_result = {
-                    "video_idx": video_idx,
-                    "original_video": video_path,
-                    "generated_video": str(output_video_path),
-                    "dataset": dataset_name,
-                    "lpips": lpips_score,
-                    "psnr": psnr_score,
-                    "ssim": ssim_score,
-                    "first_frame_metrics": first_frame_metrics,
-                    "last_frame_metrics": last_frame_metrics
-                }
-                
-                step_results["videos"].append(video_result)
-                
-                print(f"Video {video_idx+1}/{len(all_test_videos)}: "
-                      f"LPIPS={lpips_score:.4f}, PSNR={psnr_score:.2f}, SSIM={ssim_score:.4f}")
-                print(f"  首帧: LPIPS={first_frame_metrics['lpips']:.4f}, PSNR={first_frame_metrics['psnr']:.2f}, SSIM={first_frame_metrics['ssim']:.4f}")
-                print(f"  尾帧: LPIPS={last_frame_metrics['lpips']:.4f}, PSNR={last_frame_metrics['psnr']:.2f}, SSIM={last_frame_metrics['ssim']:.4f}")
-                
-            except Exception as e:
-                print(f"Error processing video {video_path}: {e}")
-                continue
-        
-        # 计算该步数的平均指标
-        if step_results["videos"]:
-            lpips_scores = [v["lpips"] for v in step_results["videos"] if v["lpips"] > 0]
-            psnr_scores = [v["psnr"] for v in step_results["videos"] if v["psnr"] > 0]
-            ssim_scores = [v["ssim"] for v in step_results["videos"] if v["ssim"] > 0]
-            
-            # 首帧指标
-            first_lpips_scores = [v["first_frame_metrics"]["lpips"] for v in step_results["videos"] if v["first_frame_metrics"]["lpips"] > 0]
-            first_psnr_scores = [v["first_frame_metrics"]["psnr"] for v in step_results["videos"] if v["first_frame_metrics"]["psnr"] > 0]
-            first_ssim_scores = [v["first_frame_metrics"]["ssim"] for v in step_results["videos"] if v["first_frame_metrics"]["ssim"] > 0]
-            
-            # 尾帧指标
-            last_lpips_scores = [v["last_frame_metrics"]["lpips"] for v in step_results["videos"] if v["last_frame_metrics"]["lpips"] > 0]
-            last_psnr_scores = [v["last_frame_metrics"]["psnr"] for v in step_results["videos"] if v["last_frame_metrics"]["psnr"] > 0]
-            last_ssim_scores = [v["last_frame_metrics"]["ssim"] for v in step_results["videos"] if v["last_frame_metrics"]["ssim"] > 0]
-            
-            step_results["summary"] = {
-                "avg_lpips": np.mean(lpips_scores) if lpips_scores else -1,
-                "std_lpips": np.std(lpips_scores) if lpips_scores else -1,
-                "avg_psnr": np.mean(psnr_scores) if psnr_scores else -1,
-                "std_psnr": np.std(psnr_scores) if psnr_scores else -1,
-                "avg_ssim": np.mean(ssim_scores) if ssim_scores else -1,
-                "std_ssim": np.std(ssim_scores) if ssim_scores else -1,
-                "num_videos": len(step_results["videos"]),
-                # 首帧指标
-                "first_frame_avg_lpips": np.mean(first_lpips_scores) if first_lpips_scores else -1,
-                "first_frame_std_lpips": np.std(first_lpips_scores) if first_lpips_scores else -1,
-                "first_frame_avg_psnr": np.mean(first_psnr_scores) if first_psnr_scores else -1,
-                "first_frame_std_psnr": np.std(first_psnr_scores) if first_psnr_scores else -1,
-                "first_frame_avg_ssim": np.mean(first_ssim_scores) if first_ssim_scores else -1,
-                "first_frame_std_ssim": np.std(first_ssim_scores) if first_ssim_scores else -1,
-                # 尾帧指标
-                "last_frame_avg_lpips": np.mean(last_lpips_scores) if last_lpips_scores else -1,
-                "last_frame_std_lpips": np.std(last_lpips_scores) if last_lpips_scores else -1,
-                "last_frame_avg_psnr": np.mean(last_psnr_scores) if last_psnr_scores else -1,
-                "last_frame_std_psnr": np.std(last_psnr_scores) if last_psnr_scores else -1,
-                "last_frame_avg_ssim": np.mean(last_ssim_scores) if last_ssim_scores else -1,
-                "last_frame_std_ssim": np.std(last_ssim_scores) if last_ssim_scores else -1,
-            }
-            
-            print(f"\nStep {step} Summary:")
-            print(f"  整体视频: LPIPS={step_results['summary']['avg_lpips']:.4f}±{step_results['summary']['std_lpips']:.4f}, "
-                  f"PSNR={step_results['summary']['avg_psnr']:.2f}±{step_results['summary']['std_psnr']:.2f}, "
-                  f"SSIM={step_results['summary']['avg_ssim']:.4f}±{step_results['summary']['std_ssim']:.4f}")
-            print(f"  首帧: LPIPS={step_results['summary']['first_frame_avg_lpips']:.4f}±{step_results['summary']['first_frame_std_lpips']:.4f}, "
-                  f"PSNR={step_results['summary']['first_frame_avg_psnr']:.2f}±{step_results['summary']['first_frame_std_psnr']:.2f}, "
-                  f"SSIM={step_results['summary']['first_frame_avg_ssim']:.4f}±{step_results['summary']['first_frame_std_ssim']:.4f}")
-            print(f"  尾帧: LPIPS={step_results['summary']['last_frame_avg_lpips']:.4f}±{step_results['summary']['last_frame_std_lpips']:.4f}, "
-                  f"PSNR={step_results['summary']['last_frame_avg_psnr']:.2f}±{step_results['summary']['last_frame_std_psnr']:.2f}, "
-                  f"SSIM={step_results['summary']['last_frame_avg_ssim']:.4f}±{step_results['summary']['last_frame_std_ssim']:.4f}")
-        
-        all_results[step] = step_results
-        
-        # 保存该步数的结果
-        with open(step_output_dir / "results.json", "w") as f:
-            json.dump(step_results, f, indent=2)
-        
-        # 清理GPU内存
-        del pipe
-        torch.cuda.empty_cache()
-    
-    # 保存所有结果
-    with open(output_dir / "all_results.json", "w") as f:
-        json.dump(all_results, f, indent=2)
-    
-    # 打印最终总结
-    print(f"\n{'='*80}")
-    print("FINAL SUMMARY")
-    print(f"{'='*80}")
-    print("\nMetrics Explanation:")
-    print("- LPIPS (Learned Perceptual Image Patch Similarity): 越低越好 (0-1，0表示完全相同)")
-    print("- PSNR (Peak Signal-to-Noise Ratio): 越高越好 (通常>30dB为好)")
-    print("- SSIM (Structural Similarity Index): 越高越好 (0-1，1表示完全相同)")
-    print()
-    
-    # 创建比较表格
-    print("\n整体视频指标:")
-    print(f"{'Step':<8} {'LPIPS':<12} {'PSNR':<12} {'SSIM':<12} {'Videos':<8}")
-    print("-" * 60)
-    
-    for step in model_steps:
-        if step in all_results and all_results[step]["videos"]:
-            summary = all_results[step]["summary"]
-            print(f"{step:<8} "
-                  f"{summary['avg_lpips']:<12.4f} "
-                  f"{summary['avg_psnr']:<12.2f} "
-                  f"{summary['avg_ssim']:<12.4f} "
-                  f"{summary['num_videos']:<8}")
-    
-    print("\n首帧指标:")
-    print(f"{'Step':<8} {'LPIPS':<12} {'PSNR':<12} {'SSIM':<12}")
-    print("-" * 50)
-    
-    for step in model_steps:
-        if step in all_results and all_results[step]["videos"]:
-            summary = all_results[step]["summary"]
-            print(f"{step:<8} "
-                  f"{summary['first_frame_avg_lpips']:<12.4f} "
-                  f"{summary['first_frame_avg_psnr']:<12.2f} "
-                  f"{summary['first_frame_avg_ssim']:<12.4f}")
-    
-    print("\n尾帧指标:")
-    print(f"{'Step':<8} {'LPIPS':<12} {'PSNR':<12} {'SSIM':<12}")
-    print("-" * 50)
-    
-    for step in model_steps:
-        if step in all_results and all_results[step]["videos"]:
-            summary = all_results[step]["summary"]
-            print(f"{step:<8} "
-                  f"{summary['last_frame_avg_lpips']:<12.4f} "
-                  f"{summary['last_frame_avg_psnr']:<12.2f} "
-                  f"{summary['last_frame_avg_ssim']:<12.4f}")
-    
-    print(f"\nResults saved to: {output_dir}")
-    print("Generated videos are stored in respective step directories.")
+    def __getitem__(self, idx: int) -> Dict:
+        """Get a single item from the dataset"""
+        item = self._data[idx]
+        item["idx"] = idx  # Add index to the item
+        return item
 
 if __name__ == "__main__":
+    print(f"Starting validation")
     main()
+
+
 
 
 

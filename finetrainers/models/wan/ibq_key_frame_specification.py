@@ -146,7 +146,7 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         Returns:
             Tuple of (quant, qloss, indices) tensors
         """
-        MAX_BATCH_SIZE = 4
+        MAX_BATCH_SIZE = 2
         total_size = images.size(0)
         
         # Initialize lists to store results

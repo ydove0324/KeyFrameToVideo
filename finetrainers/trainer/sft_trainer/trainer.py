@@ -244,11 +244,13 @@ class SFTTrainer(Trainer):
         logger.info(f"Training configured to use {len(dataset_configs)} datasets")
 
         datasets = []
+        weights = []
         for config in dataset_configs:
             data_root = config.pop("data_root", None)
             dataset_file = config.pop("dataset_file", None)
             dataset_type = config.pop("dataset_type")
             caption_options = config.pop("caption_options", {})
+            weight = config.pop("weight", 1.0)
 
             if data_root is not None and dataset_file is not None:
                 raise ValueError("Both data_root and dataset_file cannot be provided in the same dataset config.")
@@ -267,9 +269,10 @@ class SFTTrainer(Trainer):
             dataset = self.state.parallel_backend.prepare_dataset(dataset)
             dataset = data.wrap_iterable_dataset_for_preprocessing(dataset, dataset_type, config)   # 这里把数据进行 preprocess,包括抽帧和resize
             datasets.append(dataset)
+            weights.append(weight)
         if prof is not None:
             prof.step()
-        dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True,prof=prof)
+        dataset = data.combine_datasets(datasets, weights, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True,prof=prof)
         
         
         
