@@ -40,6 +40,13 @@ except ImportError:
     LPIPS_AVAILABLE = False
     print("Warning: LPIPS not available. Install with: pip install lpips")
 
+try:
+    from pytorch_fid import fid_score
+    FID_AVAILABLE = True
+except ImportError:
+    FID_AVAILABLE = False
+    print("Warning: pytorch-fid not available. Install with: pip install pytorch-fid")
+
 class VideoMetrics:
     """Video quality evaluation metrics calculation class"""
     
@@ -48,9 +55,12 @@ class VideoMetrics:
         if LPIPS_AVAILABLE:
             self.lpips_fn = lpips.LPIPS(net='alex').to(device)
     
-    def calculate_metrics(self, real_video_path: str, generated_video_path: str, height: int, width: int) -> Dict[str, float]:
-        """Calculate all metrics between two videos"""
+    def calculate_metrics(self, real_video_path: str, generated_video_path: str, height: int, width: int, key_frames_indices: torch.Tensor) -> Dict[str, float]:
+        """Calculate metrics between two videos for key frames only"""
         metrics = {}
+        
+        # Convert key_frames_indices to flat list
+        key_frames_indices = key_frames_indices.flatten().cpu().numpy().tolist()
         
         # Extract frames
         real_frames = self._extract_frames(real_video_path, height, width)
@@ -60,13 +70,27 @@ class VideoMetrics:
             return {
                 'lpips': -1.0,
                 'psnr': -1.0,
-                'ssim': -1.0
+                'ssim': -1.0,
+                'rfid': -1.0
             }
         
-        # Calculate metrics
-        metrics['lpips'] = self._calculate_lpips(real_frames, gen_frames)
-        metrics['psnr'] = self._calculate_psnr(real_frames, gen_frames)
-        metrics['ssim'] = self._calculate_ssim(real_frames, gen_frames)
+        # Extract only key frames
+        real_key_frames = [real_frames[i] for i in key_frames_indices if i < len(real_frames)]
+        gen_key_frames = [gen_frames[i] for i in key_frames_indices if i < len(gen_frames)]
+        
+        if not real_key_frames or not gen_key_frames:
+            return {
+                'lpips': -1.0,
+                'psnr': -1.0,
+                'ssim': -1.0,
+                'rfid': -1.0
+            }
+        
+        # Calculate metrics for key frames only
+        metrics['lpips'] = self._calculate_lpips(real_key_frames, gen_key_frames)
+        metrics['psnr'] = self._calculate_psnr(real_key_frames, gen_key_frames)
+        metrics['ssim'] = self._calculate_ssim(real_key_frames, gen_key_frames)
+        metrics['rfid'] = self._calculate_rfid(real_key_frames, gen_key_frames)
         
         return metrics
     
@@ -137,6 +161,64 @@ class VideoMetrics:
             ssim_scores.append(score)
         
         return float(np.mean(ssim_scores))
+    
+    def _calculate_rfid(self, real_frames: List[np.ndarray], gen_frames: List[np.ndarray]) -> float:
+        """Calculate FID score between real and generated key frames"""
+        if not FID_AVAILABLE:
+            return -1.0
+            
+        # Create temporary directories with absolute paths in /tmp
+        import tempfile
+        temp_base = tempfile.mkdtemp(prefix="rfid_calc_")
+        temp_real_dir = Path(temp_base) / "real"
+        temp_gen_dir = Path(temp_base) / "gen"
+        temp_real_dir.mkdir(parents=True, exist_ok=True)
+        temp_gen_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # Save frames as images with error checking
+            for i, (real_frame, gen_frame) in enumerate(zip(real_frames, gen_frames)):
+                try:
+                    # Ensure frames are valid numpy arrays with correct dtype
+                    real_frame = np.asarray(real_frame, dtype=np.uint8)
+                    gen_frame = np.asarray(gen_frame, dtype=np.uint8)
+                    
+                    # Save images
+                    real_path = temp_real_dir / f"frame_{i:04d}.png"
+                    gen_path = temp_gen_dir / f"frame_{i:04d}.png"
+                    
+                    Image.fromarray(real_frame).save(str(real_path))
+                    Image.fromarray(gen_frame).save(str(gen_path))
+                    
+                    # Verify files were written correctly
+                    if not real_path.exists() or real_path.stat().st_size == 0:
+                        print(f"Warning: Failed to write real frame {i}")
+                        return -1.0
+                    if not gen_path.exists() or gen_path.stat().st_size == 0:
+                        print(f"Warning: Failed to write generated frame {i}")
+                        return -1.0
+                        
+                except Exception as e:
+                    print(f"Error saving frame {i}: {str(e)}")
+                    return -1.0
+            
+            # Calculate FID score
+            try:
+                fid = fid_score.calculate_fid_given_paths(
+                    [str(temp_real_dir), str(temp_gen_dir)],
+                    batch_size=1,
+                    device=self.device,
+                    dims=2048
+                )
+                return float(fid)
+            except Exception as e:
+                print(f"Error calculating FID score: {str(e)}")
+                return -1.0
+        
+        finally:
+            # Cleanup temporary directories
+            import shutil
+            shutil.rmtree(temp_base, ignore_errors=True)
     
     def _frame_to_tensor(self, frame: np.ndarray) -> torch.Tensor:
         """Convert frame to tensor normalized to [-1,1]"""
@@ -274,14 +356,15 @@ def run_validation(rank, world_size, args):
             video_path, 
             str(output_path),
             height=item["height"],
-            width=item["width"]
+            width=item["width"],
+            key_frames_indices=key_frames_indices
         )
         if rank == 0:
             print(f"Metrics Calculated Successfully")
         all_metrics.append(metrics)
         
         if rank == 0:
-            print(f"Metrics: LPIPS={metrics['lpips']:.4f}, PSNR={metrics['psnr']:.2f}, SSIM={metrics['ssim']:.4f}")
+            print(f"Metrics: LPIPS={metrics['lpips']:.4f}, PSNR={metrics['psnr']:.2f}, SSIM={metrics['ssim']:.4f}, RFID={metrics['rfid']:.4f}")
     
     # Gather metrics from all processes
     world_metrics = [None] * world_size
@@ -296,12 +379,12 @@ def run_validation(rank, world_size, args):
         # Calculate and save average metrics
         avg_metrics = {
             metric: float(np.mean([m[metric] for m in combined_metrics]))
-            for metric in ['lpips', 'psnr', 'ssim']
+            for metric in ['lpips', 'psnr', 'ssim', 'rfid']
         }
         
         std_metrics = {
             metric: float(np.std([m[metric] for m in combined_metrics]))
-            for metric in ['lpips', 'psnr', 'ssim']
+            for metric in ['lpips', 'psnr', 'ssim', 'rfid']
         }
         
         results = {
@@ -318,6 +401,7 @@ def run_validation(rank, world_size, args):
         print(f"LPIPS: {avg_metrics['lpips']:.4f} ± {std_metrics['lpips']:.4f}")
         print(f"PSNR: {avg_metrics['psnr']:.2f} ± {std_metrics['psnr']:.2f}")
         print(f"SSIM: {avg_metrics['ssim']:.4f} ± {std_metrics['ssim']:.4f}")
+        print(f"RFID: {avg_metrics['rfid']:.4f} ± {std_metrics['rfid']:.4f}")
 
 def main():
     # Parse arguments

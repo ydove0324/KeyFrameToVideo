@@ -252,13 +252,13 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         key_frames = func_F.interpolate(key_frames, size=(height, width), mode='bilinear', align_corners=False)
         key_frames = key_frames.to(device=device, dtype=dtype) # [B*F',3,H,W]
         key_frames_quants, key_frames_qloss, _ = self._ibq_encode(key_frames) # [B*F',256,H/16,W/16]
+        key_frames_quants = key_frames_quants.view(B, F, 256, height//16, width//16) # Reshape back to [B,F',256,H/16,W/16]
         if self.using_cross_attn:
             encoder_hidden_states_image = key_frames_quants.permute(0, 2, 1, 3, 4).flatten(2)   # [B,256,F'*H/16*W/16]
             encoder_hidden_states_image = encoder_hidden_states_image.permute(0, 2, 1)   # [B,F'*H/16*W/16,256]
             encoder_hidden_states_image = encoder_hidden_states_image.to(device=device, dtype=dtype)
         else:
             encoder_hidden_states_image = None
-        key_frames_quants = key_frames_quants.view(B, F, 256, height//16, width//16) # Reshape back to [B,F',256,H/16,W/16]
         latent_condition = self._quant_to_3d_latent(key_frames_quants, key_frames_indices, num_frames) # [B,256,F,H/8,W/8]
 
         
@@ -350,7 +350,7 @@ import decord
 
 if __name__ == "__main__":
     # load your checkpoints as before …
-    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img/model_weights/004000"
+    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-2/model_weights/000500"
     model_id = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 
@@ -395,7 +395,7 @@ if __name__ == "__main__":
         scheduler=scheduler,
         tokenizer=tokenizer,
     ).to("cuda")
-    video_path = "a39e78046826c99432173630feec2456fe87ca43.mp4"
+    video_path = "validate_results/step_012000/pexel_part2_0_055a7386dc5cc5a1914fa5487d45ed4e08764354_generated.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
     key_frames_indices = torch.Tensor([0]).to("cuda")
@@ -414,7 +414,7 @@ if __name__ == "__main__":
         height=480,
         width=832,
         num_frames=1,
-        num_inference_steps=100,
+        num_inference_steps=50,
         guidance_scale=0
     )
     # flow_shift = 3.0  # 5.0 for 720P, 3.0 for 480P
@@ -427,4 +427,4 @@ if __name__ == "__main__":
     #     num_frames=49,
     #     guidance_scale=0
     # ).frames[0]
-    export_to_video(video, "cfg0.mp4", fps=16)
+    export_to_video(video, "cfg0_test.mp4", fps=16)
