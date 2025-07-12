@@ -307,7 +307,7 @@ def run_validation(rank, world_size, args):
     pipe = load_pipeline(args.model_id, args.transformer_path, device)
     
     # Load encoder hidden states
-    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to(device)
+    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t700.pt").to(device)
     
     # Create output directory with rank
     output_dir = Path(args.output_dir)

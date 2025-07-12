@@ -1,20 +1,22 @@
 {
     "datasets": [
+
       {
-        "data_root": "/share/project/huangxu/workspace/KeyFrameToVideo/data/overfit_video",
+        "data_root": "/share/project/huangxu/video-data/pexel-clips-part2_0_flowgt20_webdataset",
         "dataset_type": "video",
         "id_token": "",
         "video_resolution_buckets": [
-          [17,480, 832],
-          [17,832, 480],
-          [17,480, 480]
+          [17, 480, 832], 
+          [17, 832, 480],
+          [17, 480, 480]
         ],
         "reshape_mode": "bicubic",
         "remove_common_llm_caption_prefixes": true,
         "caption_options": {
           "column_names": "caption"
         },
-        "p_drop_caption": 1.0
+        "p_drop_caption": 1.0,
+        "weight": 1.0
       }
     ]
   }

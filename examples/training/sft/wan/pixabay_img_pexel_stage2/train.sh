@@ -29,8 +29,8 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 BACKEND="ptd"
 
 # Dataset configuration
-TRAINING_DATASET_CONFIG="examples/training/sft/wan/pixabay_img/training.json"
-VALIDATION_DATASET_FILE="examples/training/sft/wan/pixabay_img/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/sft/wan/pixabay_img_pexel_stage2/training.json"
+VALIDATION_DATASET_FILE="examples/training/sft/wan/pixabay_img_pexel_stage2/validation.json"
 
 # Parallel strategy configuration
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -42,7 +42,7 @@ DDP_32="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 32 --dp_shards 1 -
 
 # Parallel arguments
 parallel_cmd=(
-  $DDP_32
+  $DDP_1
 )
 
 # Model arguments
@@ -66,20 +66,20 @@ dataloader_cmd=(
 diffusion_cmd=(
   --flow_weighting_scheme "logit_normal"
 )
+
 # Training arguments
 training_cmd=(
   --training_type "full-finetune"
   --seed 42
   --batch_size 4
-  --image_batch_size 16
-  --train_steps 10000
+  --image_batch_size 14
+  --train_steps 8000
+  # --resume_from_checkpoint "latest"
   --gradient_accumulation_steps 4
   --gradient_checkpointing
-  --resume_from_checkpoint "latest"
-  --checkpointing_steps 500
+  --checkpointing_steps 250
   --checkpointing_limit 3
-  --train_modules "patch_embedding"
-  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img/model_weights/004000/transformer"
+  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-pexel/model_weights/008000/transformer"
   --enable_slicing
   --enable_tiling
 )
@@ -87,13 +87,13 @@ training_cmd=(
 # Optimizer arguments
 optimizer_cmd=(
   --optimizer "adamw"
-  --lr 1e-4
+  --lr 5e-5
   --lr_scheduler "constant_with_warmup"
   --lr_warmup_steps 500
   --lr_num_cycles 1
   --beta1 0.9
-  --beta2 0.99
-  --weight_decay 1e-4
+  --beta2 0.95
+  --weight_decay 0.02
   --epsilon 1e-8
   --max_grad_norm 1.0
 )
@@ -101,13 +101,13 @@ optimizer_cmd=(
 # Validation arguments
 validation_cmd=(
   --validation_dataset_file "$VALIDATION_DATASET_FILE"
-  --validation_steps 500000
+  --validation_steps 100000
 )
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-ibq-key-frame-pixabay-img-2"
-  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-2"
+  --tracker_name "finetrainers-wan-ibq-key-frame-pixabay-img-pexel-stage2"
+  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-pexel-stage2"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"

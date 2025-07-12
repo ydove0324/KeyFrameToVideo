@@ -29,8 +29,8 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 BACKEND="ptd"
 
 # Dataset configuration
-TRAINING_DATASET_CONFIG="examples/training/sft/wan/pixabay_img/training.json"
-VALIDATION_DATASET_FILE="examples/training/sft/wan/pixabay_img/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/sft/wan/overfit-img-test/training.json"
+VALIDATION_DATASET_FILE="examples/training/sft/wan/overfit-img-test/validation.json"
 
 # Parallel strategy configuration
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -42,7 +42,7 @@ DDP_32="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 32 --dp_shards 1 -
 
 # Parallel arguments
 parallel_cmd=(
-  $DDP_32
+  $DDP_8
 )
 
 # Model arguments
@@ -70,16 +70,16 @@ diffusion_cmd=(
 training_cmd=(
   --training_type "full-finetune"
   --seed 42
-  --batch_size 4
+  --batch_size 2
   --image_batch_size 16
-  --train_steps 10000
+  --train_steps 2000
   --gradient_accumulation_steps 4
   --gradient_checkpointing
+  --disable_dataloader_resume "true"
   --resume_from_checkpoint "latest"
   --checkpointing_steps 500
   --checkpointing_limit 3
-  --train_modules "patch_embedding"
-  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img/model_weights/004000/transformer"
+  --transformer_id "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B/transformer"
   --enable_slicing
   --enable_tiling
 )
@@ -87,7 +87,7 @@ training_cmd=(
 # Optimizer arguments
 optimizer_cmd=(
   --optimizer "adamw"
-  --lr 1e-4
+  --lr 5e-5
   --lr_scheduler "constant_with_warmup"
   --lr_warmup_steps 500
   --lr_num_cycles 1
@@ -106,8 +106,8 @@ validation_cmd=(
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-ibq-key-frame-pixabay-img-2"
-  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-2"
+  --tracker_name "finetrainers-wan-ibq-key-frame-overfit-img-test"
+  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-overfit-img-test"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"

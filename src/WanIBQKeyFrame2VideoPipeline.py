@@ -260,6 +260,7 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         else:
             encoder_hidden_states_image = None
         latent_condition = self._quant_to_3d_latent(key_frames_quants, key_frames_indices, num_frames) # [B,256,F,H/8,W/8]
+        # latent_condition = torch.load("debug_tensors/train_condition_latents.pt").to(device=device, dtype=dtype)
 
         
 
@@ -280,7 +281,7 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
             latent_condition.shape[-2],
             latent_condition.shape[-1],
         ).transpose(1, 2)
-
+        # latent_condition_mask = torch.load("debug_tensors/latent_condition_mask_t1000.pt").to(device=device, dtype=dtype)
         # --------------------------------------------------------------
         # 3. Initialise noisy latents & set timesteps
         # --------------------------------------------------------------
@@ -350,7 +351,7 @@ import decord
 
 if __name__ == "__main__":
     # load your checkpoints as before …
-    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-2/model_weights/000500"
+    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-pexel-stage2/model_weights/004000"
     model_id = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 
@@ -395,12 +396,12 @@ if __name__ == "__main__":
         scheduler=scheduler,
         tokenizer=tokenizer,
     ).to("cuda")
-    video_path = "validate_results/step_012000/pexel_part2_0_055a7386dc5cc5a1914fa5487d45ed4e08764354_generated.mp4"
+    video_path = "data/overfit_video/0CWZMaN4uAE_s001.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
-    key_frames_indices = torch.Tensor([0]).to("cuda")
+    key_frames_indices = torch.Tensor([0,4,8,12,16]).to("cuda")
     key_frames_indices = key_frames_indices.unsqueeze(0)
-    key_frames = vr.get_batch([0]).to("cuda")    # [F,H,W,3]
+    key_frames = vr.get_batch([0,4,8,12,16]).to("cuda")    # [F,H,W,3]
     key_frames = key_frames.permute(0, 3, 1, 2)    # [F,3,H,W]
     key_frames = key_frames.unsqueeze(0)    # [B,F,3,H,W] B = 1
     
@@ -411,9 +412,9 @@ if __name__ == "__main__":
         key_frames=key_frames,
         key_frames_indices=key_frames_indices,
         save_debug_video_to="first_frame.mp4",
-        height=480,
-        width=832,
-        num_frames=1,
+        height=832,
+        width=480,
+        num_frames=17,
         num_inference_steps=50,
         guidance_scale=0
     )
