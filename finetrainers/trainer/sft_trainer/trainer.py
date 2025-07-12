@@ -274,8 +274,6 @@ class SFTTrainer(Trainer):
             prof.step()
         dataset = data.combine_datasets(datasets, weights, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True,prof=prof)
         
-        
-        
         dataloader = self.state.parallel_backend.prepare_dataloader(
             dataset, batch_size=1, num_workers=self.args.dataloader_num_workers, pin_memory=self.args.pin_memory
         )
@@ -437,6 +435,7 @@ class SFTTrainer(Trainer):
             train_state.step += 1
             # Update observed samples based on actual batch size used
             current_batch_size = self.args.image_batch_size if is_image_batch else self.args.batch_size
+            logger.info(f"current_batch_size: {current_batch_size}")
             train_state.observed_data_samples += current_batch_size * parallel_backend._dp_degree
 
             logger.debug(f"Starting training step ({train_state.step}/{self.args.train_steps})")

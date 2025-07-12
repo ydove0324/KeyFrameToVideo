@@ -82,7 +82,6 @@ def resize_to_nearest_bucket_video(
         video = video[indices, :, :, :]
     elif num_frames < target_frames:
         _first_frame_only = False
-
     # Resize spatial resolution
     if resize_mode == "center_crop":
         return center_crop_video(video, (target_h, target_w)), _first_frame_only

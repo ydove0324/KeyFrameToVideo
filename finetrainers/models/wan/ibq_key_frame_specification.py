@@ -40,6 +40,13 @@ logger = get_logger()
 to_pil_image = transforms.ToPILImage(mode="RGB")
 
 
+def _denormalize_latents(latents: torch.Tensor, latents_mean: torch.Tensor, latents_std: torch.Tensor) -> torch.Tensor:
+    """Undo the affine transform."""
+    latents_mean = latents_mean.view(1, -1, 1, 1, 1).to(device=latents.device)
+    latents_std = latents_std.view(1, -1, 1, 1, 1).to(device=latents.device)
+    return ((latents.float() / latents_std) + latents_mean).to(latents)
+
+
 def export_video_tensor_to_file(video_tensor: torch.Tensor, output_path: str, fps: int = 16) -> None:
     """
     Export a video tensor to a video file.
@@ -234,13 +241,9 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         
         # Reshape key_frames to combine batch and frame dimensions
         key_frames = key_frames.view(B * _F, C, H, W)
-        
-        # Resize key_frames and normalize to [-1, 1] if needed
-        if key_frames.max() > 1.0:  # Assume input is in [0, 255] range
-            key_frames = (key_frames.float() / 127.5 - 1.0)
+       
+        assert key_frames.max() < 1.0 + 2e-1 and key_frames.min() > -1.0 - 2e-1, "Key frames must be normalized to [-1, 1]"
         key_frames = key_frames.to(device=device, dtype=dtype)  # [B*_F, C, H, W]
-        
-        # IBQ encode the key frames
         key_frames_quants, _, _ = self._ibq_encode(ibq_model, key_frames)  # [B*_F, 256, H/16, W/16]
         key_frames_quants = key_frames_quants.view(B, _F, 256, H//16,W//16)  # [B, _F, 256, H/16, W/16]
         if self.return_hidden_states:
@@ -608,7 +611,6 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
     ) -> Tuple[torch.Tensor, ...]:
         compute_posterior = False  # See explanation in prepare_latents    
         latent_condition = latent_condition_mask = None
-
         if compute_posterior:
             latents = latent_model_conditions.pop("latents")
             latent_condition = latent_model_conditions.pop("latent_condition", None)
@@ -664,7 +666,14 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
                 noise.detach().cpu(),
                 os.path.join(debug_dir, f"noise_t{timestep_val}.pt")
             )
-            
+            torch.save(
+                latent_condition.detach().cpu(),
+                os.path.join(debug_dir, f"latent_condition_t{timestep_val}.pt")
+            )
+            torch.save(
+                latent_condition_mask.detach().cpu(),
+                os.path.join(debug_dir, f"latent_condition_mask_t{timestep_val}.pt")
+            )
             # Save encoder_hidden_states_image if it exists
             if "encoder_hidden_states_image" in latent_model_conditions:
                 torch.save(
@@ -674,6 +683,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
             
             print(f"Saved debug tensors for timestep {timestep_val} to {debug_dir}/")
             x_0 = noise - pred
+            x_0 = _denormalize_latents(x_0, latents_mean, latents_std)
             torch.save(x_0.detach().cpu(), os.path.join(debug_dir, f"x_0_t{timestep_val}.pt"))
             # print(f"x_0 shape: {x_0.shape}, noise shape: {noise.shape}, pred shape: {pred.shape}")
             # print(f"x_0: {x_0}, noise: {noise}, pred: {pred}")
@@ -683,7 +693,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
             with torch.no_grad():
                 video = vae.decode(x_0).sample[0]
             with torch.no_grad():
-                video_2 = vae.decode(_noisy_latents.to(self.vae_dtype)).sample[0]
+                video_2 = vae.decode(_denormalize_latents(_noisy_latents, latents_mean, latents_std).to(self.vae_dtype)).sample[0]
             print(f"video shape: {video.shape}")
             with torch.no_grad():
                 no_img_nosiy_latents = torch.cat([_noisy_latents, torch.zeros_like(latent_condition_mask), torch.zeros_like(latent_condition)], dim=1)
@@ -696,6 +706,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
                     return_dict=False,
                 )[0]
                 x_0_no_img = noise - pred_no_img
+                x_0_no_img = _denormalize_latents(x_0_no_img, latents_mean, latents_std)
                 with torch.no_grad():
                     video_3 = vae.decode(x_0_no_img).sample[0]
             

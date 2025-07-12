@@ -551,7 +551,17 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         self.using_tar_files = False
         self.using_parquet_files = False
         if len(self.tar_files) == 0:
-            data = datasets.load_dataset(dataset_name,split="train",streaming=True)
+            # For parquet files, we need to preprocess the video data
+            raw_data = datasets.load_dataset(dataset_name, split="train", streaming=True)
+            
+            # Convert VideoReader to tensor during loading
+            def preprocess_sample(sample):
+                if "video" in sample:
+                    if isinstance(sample["video"], (torchvision.io.video_reader.VideoReader, decord.VideoReader)):
+                        sample["video"] = _preprocess_video(sample["video"])
+                return sample
+            
+            data = raw_data.map(preprocess_sample)
             self.using_parquet_files = True
         else:
             self.using_tar_files = True
@@ -562,7 +572,8 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                 caption_columns = [column for column in data.column_names if column in COMMON_WDS_CAPTION_COLUMN_NAMES]
                 if len(caption_columns) == 0:
                     raise ValueError(
-                        f"No common caption column found in the dataset. Supported columns are: {COMMON_WDS_CAPTION_COLUMN_NAMES}"
+                        f"No common caption column found in the dataset. Supported columns are: {COMMON_WDS_CAPTION_COLUMN_NAMES}. "
+                        f"Available columns are: {data.column_names}"
                     )
                 weights = [1] * len(caption_columns)
             else:
@@ -595,8 +606,8 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
 
         for column_names in constants.SUPPORTED_VIDEO_FILE_EXTENSIONS:
             if column_names in data.column_names:
-                data = data.cast_column(column_names, datasets.Video())
                 data = data.rename_column(column_names, "video")
+                data = data.cast_column("video", datasets.Video())
                 break
 
         self._data = data
@@ -771,6 +782,7 @@ class IterableDatasetPreprocessingWrapper(
                     sample["image"] = FF.resize_to_nearest_bucket_image(
                         sample["image"], self.image_resolution_buckets, self.reshape_mode
                     )
+                    sample["image"] = torch.clamp(sample["image"], -1.0, 1.0)
             elif self.dataset_type == "video":
                 if self.video_resolution_buckets:
                     sample["_original_num_frames"] = sample["video"].size(0)
@@ -779,6 +791,7 @@ class IterableDatasetPreprocessingWrapper(
                     sample["video"], _first_frame_only = FF.resize_to_nearest_bucket_video(
                         sample["video"], self.video_resolution_buckets, self.reshape_mode
                     )
+                    sample["video"] = torch.clamp(sample["video"], -1.0, 1.0)
                     if _first_frame_only:
                         msg = (
                             "The number of frames in the video is less than the minimum bucket size "
@@ -1055,7 +1068,7 @@ def _preprocess_image(image: PIL.Image.Image) -> torch.Tensor:
     image = image.convert("RGB")
     image = np.array(image).astype(np.float32)
     image = torch.from_numpy(image)
-    image = image.permute(2, 0, 1).contiguous() / 127.5 - 1.0
+    image = torch.clamp(image.permute(2, 0, 1).contiguous() / 127.5 - 1.0, -1.0, 1.0)
     return image
 
 
@@ -1064,7 +1077,7 @@ if is_datasets_version("<", "3.4.0"):
     def _preprocess_video(video: decord.VideoReader) -> torch.Tensor:
         video = video.get_batch(list(range(len(video))))
         video = video.permute(0, 3, 1, 2).contiguous()
-        video = video.float() / 127.5 - 1.0
+        video = torch.clamp(video.float() / 127.5 - 1.0, -1.0, 1.0)
         return video
 
 else:
@@ -1080,5 +1093,5 @@ else:
         except StopIteration:
             pass
         video = torch.stack(frames)
-        video = video.float() / 127.5 - 1.0
+        video = torch.clamp(video.float() / 127.5 - 1.0, -1.0, 1.0)
         return video
