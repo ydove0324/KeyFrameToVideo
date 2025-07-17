@@ -4,7 +4,7 @@ import torch
 import sys
 sys.path.append(".")
 from src.model.ibq_tokenizer import IBQ, tokenize_image, reconstruct_image, process_image
-
+from src.model.ibq_tokenizer.utils import test_noise_robustness
 
 if __name__ == "__main__":
     tokenize_path = "/share/project/zhangfan/weights/Emu3.5-Tokenizer/IBQ-XL-f16c131k-FI"
@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
     tokenizer = model
     import decord
-    video_path = "validate_results/step_012000/pexel_part2_1_294123638bc0b4bd57e6d64951bebec51ae99cf9_generated.mp4"
+    video_path = "_tmp/b07105779bda487b8ded5a6349bb3dae90f291ce_clip_0045.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
     first_frame = vr.get_batch([0])  # Shape: (1, H, W, 3)
@@ -39,5 +39,6 @@ if __name__ == "__main__":
     print(first_frame.shape)
     quant, qloss, indices = process_image(first_frame, model)
     print(quant.shape)
-    reconstructed_image = reconstruct_image(quant, model)
-    reconstructed_image.save("reconstructed_image.png")
+    # reconstructed_image = reconstruct_image(quant, model)
+    # reconstructed_image.save("reconstructed_image.png")
+    test_noise_robustness(quant, model)

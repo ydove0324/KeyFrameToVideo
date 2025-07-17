@@ -351,7 +351,7 @@ import decord
 
 if __name__ == "__main__":
     # load your checkpoints as before …
-    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-pexel-stage2/model_weights/004000"
+    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-video-reconstruction/model_weights/010000"
     model_id = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 
@@ -374,7 +374,7 @@ if __name__ == "__main__":
     text_encoder = UMT5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_id, subfolder="tokenizer")
 
-    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda")
+    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to("cuda").to(torch.bfloat16)
     tokenize_path = "/share/project/zhangfan/weights/Emu3.5-Tokenizer/IBQ-XL-f16c131k-FI"
     config_name = "fusimage_ibqgan_xl_131072_siglip.yaml"
     config = OmegaConf.load(os.path.join(tokenize_path, config_name))
@@ -396,24 +396,24 @@ if __name__ == "__main__":
         scheduler=scheduler,
         tokenizer=tokenizer,
     ).to("cuda")
-    video_path = "data/overfit_video/0CWZMaN4uAE_s001.mp4"
+    video_path = "data/pexel_part2_6_validate_videos/b07105779bda487b8ded5a6349bb3dae90f291ce_clip_0045.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
-    key_frames_indices = torch.Tensor([0,4,8,12,16]).to("cuda")
+    key_frames_indices = torch.Tensor([0,16]).to("cuda")
     key_frames_indices = key_frames_indices.unsqueeze(0)
-    key_frames = vr.get_batch([0,4,8,12,16]).to("cuda")    # [F,H,W,3]
+    key_frames = vr.get_batch([0,16]).to("cuda")    # [F,H,W,3]
     key_frames = key_frames.permute(0, 3, 1, 2)    # [F,3,H,W]
     key_frames = key_frames.unsqueeze(0)    # [B,F,3,H,W] B = 1
     
     
     video = pipe(
         encoder_hidden_states=encoder_hidden_states,
-        seed=42,
+        seed=49,
         key_frames=key_frames,
         key_frames_indices=key_frames_indices,
         save_debug_video_to="first_frame.mp4",
-        height=832,
-        width=480,
+        height=480,
+        width=832,
         num_frames=17,
         num_inference_steps=50,
         guidance_scale=0

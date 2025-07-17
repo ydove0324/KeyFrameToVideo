@@ -1,10 +1,10 @@
 # calc_raft_flow_dataset.py  (只展示核心部分)
 
 '''
-torchrun --nproc_per_node 8 --master_port 29501 script/calc_raft_flow_webdataset.py \
-        --dataset_dir /share/project/huangxu/video-data/pexel-clips-part2_1_filtered_webdataset \
-        --out_json /share/project/huangxu/video-data/pexel-clips-part2_1_filtered_webdataset/flow_scores.json \
-        --batch_size 1
+torchrun --nproc_per_node 4 --master_port 29501 script/calc_raft_flow_webdataset.py \
+        --dataset_dir /share/project/huangxu/video-data/pexel-clips-part2_3_filtered_webdataset \
+        --out_json /share/project/huangxu/video-data/pexel-clips-part2_3_filtered_webdataset/flow_scores.json \
+        --batch_size 4
 '''
 import os, glob, json, torch, decord, datasets
 import torch.distributed as dist

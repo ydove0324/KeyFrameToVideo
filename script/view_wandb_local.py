@@ -2,7 +2,7 @@ import wandb
 import sys
 
 def view_wandb_run():
-    run_path = "./logs/wandb/offline-run-20250701_171736-1qbnukkg"
+    run_path = "./logs/wandb/offline-run-20250715_131519-k1wn84jb"
     print(f"Loading wandb run from: {run_path}")
     api = wandb.Api()
     run = api.run(run_path)

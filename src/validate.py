@@ -95,10 +95,24 @@ class VideoMetrics:
         return metrics
     
     def _extract_frames(self, video_path: str, height: int, width: int) -> List[np.ndarray]:
-        """Extract frames from video using OpenCV"""
+        """Extract frames from **video** or return a single frame for **image** inputs."""
+
+        img_exts = [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif"]
+        suffix = Path(video_path).suffix.lower()
+
+        # Image input ➜ single frame list
+        if suffix in img_exts:
+            img = cv2.imread(video_path)
+            if img is None:
+                return []
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, (width, height))
+            return [img]
+
+        # Video input ➜ iterate through frames
         cap = cv2.VideoCapture(video_path)
         frames = []
-        
+
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -106,7 +120,7 @@ class VideoMetrics:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame = cv2.resize(frame, (width, height))
             frames.append(frame)
-        
+
         cap.release()
         return frames
     
@@ -267,17 +281,39 @@ def load_pipeline(model_id: str, transformer_path: str, device: Union[str, torch
     return pipe
 
 def extract_keyframes(video_path: str, key_frames_indices: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Extract first frame from video and prepare for pipeline"""
+    """Extract key frame(s) from either a **video** or a **single image**.
+
+    If `video_path` points to an image file, one frame is loaded and returned.
+    """
+
+    img_exts = [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif"]
+    suffix = Path(video_path).suffix.lower()
+
+    # -------------------------------------------------------------
+    # Case 1: Input is an **image** ➜ single frame (F = 1)
+    # -------------------------------------------------------------
+    if suffix in img_exts:
+        from PIL import Image
+        import numpy as np
+
+        img = Image.open(video_path).convert("RGB")
+        frame = torch.from_numpy(np.array(img)).to("cuda")  # [H,W,3]
+        frame = frame.permute(2, 0, 1)  # [3,H,W]
+
+        key_frames = frame.unsqueeze(0).unsqueeze(0)  # [B=1,F=1,3,H,W]
+        key_frames_indices_tensor = torch.tensor([[0]], device="cuda")
+        return key_frames, key_frames_indices_tensor
+
+    # -------------------------------------------------------------
+    # Case 2: Input is a **video** ➜ gather requested key frames
+    # -------------------------------------------------------------
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
-    
-    # Get first frame
     key_frames = vr.get_batch(key_frames_indices).to("cuda")  # [F,H,W,3]
     key_frames = key_frames.permute(0, 3, 1, 2)  # [F,3,H,W]
-    key_frames = key_frames.unsqueeze(0)  # [B,F,3,H,W] B = 1
-    
+    key_frames = key_frames.unsqueeze(0)  # [B,F,3,H,W] (B = 1)
+
     key_frames_indices_tensor = torch.tensor(key_frames_indices, device="cuda")
-    
     return key_frames, key_frames_indices_tensor
 
 def identity_collate(x):
@@ -307,7 +343,7 @@ def run_validation(rank, world_size, args):
     pipe = load_pipeline(args.model_id, args.transformer_path, device)
     
     # Load encoder hidden states
-    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t700.pt").to(device)
+    encoder_hidden_states = torch.load("debug_tensors/encoder_hidden_states_t1000.pt").to(device)
     
     # Create output directory with rank
     output_dir = Path(args.output_dir)
@@ -318,16 +354,30 @@ def run_validation(rank, world_size, args):
     
     # Run validation
     for batch in tqdm(dataloader, desc=f"Validating (GPU {rank})", disable=rank != 0):
-        item = batch[0]  # Since batch_size=1, we take the first item
-        video_path = item["video_path"]
-        key_frames_indices = item["key_frames_indices"]
-        num_frames = item["num_frames"]
-        
+        item = batch[0]  # Since batch_size=1, we take the first (and only) item
+
+        # ------------------------------------------------------------------
+        # Support either `image_path` or `video_path` (exactly one must exist)
+        # ------------------------------------------------------------------
+        has_video = "video_path" in item and item["video_path"] is not None
+        has_image = "image_path" in item and item["image_path"] is not None
+        assert has_video ^ has_image, "Exactly one of 'video_path' or 'image_path' must be provided."
+
+        media_path = item["video_path"] if has_video else item["image_path"]
+
+        # Default parameters for image inputs
+        if has_image:
+            num_frames = 1
+            key_frames_indices = item.get("key_frames_indices", [[0]])
+        else:
+            num_frames = item["num_frames"]
+            key_frames_indices = item["key_frames_indices"]
+
         if rank == 0:
-            print(f"Processing {video_path} on GPU {rank}")
+            print(f"Processing {media_path} on GPU {rank}")
         
         # Extract keyframes
-        key_frames, key_frames_indices = extract_keyframes(video_path, key_frames_indices)
+        key_frames, key_frames_indices = extract_keyframes(media_path, key_frames_indices)
         if rank == 0:
             print(f"Key frames: {key_frames.shape}")
             print(f"Key frames indices: {key_frames_indices.shape}")
@@ -348,12 +398,12 @@ def run_validation(rank, world_size, args):
             print(f"Generated frames Successfully")
         
         # Save generated video
-        output_path = output_dir / f"{Path(video_path).stem}_generated.mp4"
+        output_path = output_dir / f"{Path(media_path).stem}_generated.mp4"
         export_to_video(generated_frames, str(output_path), fps=16)
         
         # Calculate metrics
         metrics = metrics_calculator.calculate_metrics(
-            video_path, 
+            media_path, 
             str(output_path),
             height=item["height"],
             width=item["width"],
@@ -361,6 +411,9 @@ def run_validation(rank, world_size, args):
         )
         if rank == 0:
             print(f"Metrics Calculated Successfully")
+        # Attach sample index so we can identify low-PSNR items later
+        metrics["idx"] = item["idx"]
+        metrics["media_path"] = media_path  # Save original media path for later reference
         all_metrics.append(metrics)
         
         if rank == 0:
@@ -386,11 +439,38 @@ def run_validation(rank, world_size, args):
             metric: float(np.std([m[metric] for m in combined_metrics]))
             for metric in ['lpips', 'psnr', 'ssim', 'rfid']
         }
-        
+
+        # ------------------------------------------------------------------
+        # Identify lowest 10 % PSNR samples
+        # ------------------------------------------------------------------
+        psnr_values = [m["psnr"] for m in combined_metrics]
+        if len(psnr_values) > 0:
+            psnr_threshold = float(np.percentile(psnr_values, 10))  # bottom 10 percentile
+            lowest_psnr_metrics = [m for m in combined_metrics if m["psnr"] <= psnr_threshold]
+            lowest_psnr_paths = [m.get("media_path", "") for m in lowest_psnr_metrics]
+
+            print("\nLowest 10% PSNR threshold: {:.2f}".format(psnr_threshold))
+            print("Paths with lowest 10% PSNR:", lowest_psnr_paths)
+
+            # Add to results for further inspection
+            results_extra = {
+                "psnr_threshold_10pct": psnr_threshold,
+                "lowest_10pct_psnr_paths": lowest_psnr_paths,
+                "lowest_10pct_psnr_metrics": lowest_psnr_metrics,
+            }
+        else:
+            results_extra = {
+                "psnr_threshold_10pct": None,
+                "lowest_10pct_psnr_paths": [],
+                "lowest_10pct_psnr_metrics": [],
+            }
+
+        # Merge extra results
         results = {
             'average_metrics': avg_metrics,
             'std_metrics': std_metrics,
-            'all_metrics': combined_metrics
+            'all_metrics': combined_metrics,
+            **results_extra
         }
         
         # Save final results
@@ -434,8 +514,6 @@ class ValidationDataset(Dataset):
         super().__init__()
         with open(validation_file, 'r') as f:
             self._data = json.load(f)["data"]
-        for item in self._data:
-            item.pop("image_path", None)
     
     def __len__(self) -> int:
         """Return the number of items in the dataset"""

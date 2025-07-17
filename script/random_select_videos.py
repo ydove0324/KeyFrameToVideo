@@ -41,8 +41,8 @@ def calculate_flow_score(video_path):
     return total_flow / frame_count if frame_count > 1 else 0
 
 # 源目录和目标目录
-source_dir = "/share/project/huangxu/video-data/pexel-clips-part2_1_filtered"
-target_dir = "demo_videos"
+source_dir = "/share/project/huangxu/video-data/pexel-clips-part2_6_filtered"
+target_dir = "pexel_part2_6_validate_videos"
 
 # 确保目标目录存在
 os.makedirs(target_dir, exist_ok=True)
@@ -103,16 +103,28 @@ for video in selected_videos:
     print(f"复制并处理: {new_filename} - flow_score: {flow_score:.2f}")
     shutil.copy2(video, destination)
 
+    # 计算原视频分辨率并选择最接近的目标分辨率
+    cap_info = cv2.VideoCapture(video)
+    orig_width = int(cap_info.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_height = int(cap_info.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap_info.release()
+
+    candidate_resolutions = [(480, 832), (480, 480), (832, 480)]  # (height, width)
+    best_height, best_width = min(
+        candidate_resolutions,
+        key=lambda res: (orig_height - res[0]) ** 2 + (orig_width - res[1]) ** 2,
+    )
+
     # 创建基础数据项
     data_item = {
         "caption": "",
         "image_path": None,
         "video_path": video_path_rel,
         "num_inference_steps": 50,
-        "height": 480,
-        "width": 832,
+        "height": best_height,
+        "width": best_width,
         "num_frames": 17,
-        "flow_score": float(flow_score)
+        "flow_score": float(flow_score),
     }
     validation_data.append(data_item)
 
