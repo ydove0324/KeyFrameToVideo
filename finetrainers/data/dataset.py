@@ -818,6 +818,9 @@ class IterableDatasetPreprocessingWrapper(
             # Handle key_frames_indices if present (similar to ValidationDataset)
             if sample.get("key_frames_indices", None) is not None:
                 sample["key_frames_indices"] = torch.tensor(sample["key_frames_indices"])
+            if sample.get("json", None) is not None:
+                if sample["json"].get("original_path", None) is not None:
+                    print("original_path:",sample["json"]["original_path"],"__url__:",sample["json"]["__url__"])
             yield sample
 
     def load_state_dict(self, state_dict):
