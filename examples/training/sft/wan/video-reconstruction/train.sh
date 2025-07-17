@@ -29,8 +29,8 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 BACKEND="ptd"
 
 # Dataset configuration
-TRAINING_DATASET_CONFIG="examples/training/sft/wan/pexel_flowgt20/training.json"
-VALIDATION_DATASET_FILE="examples/training/sft/wan/pexel_flowgt20/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/sft/wan/video-reconstruction/training.json"
+VALIDATION_DATASET_FILE="examples/training/sft/wan/video-reconstruction/validation.json"
 
 # Parallel strategy configuration
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -39,10 +39,11 @@ DDP_4="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 4 --dp_shards 1 --c
 DDP_8="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 8 --dp_shards 1 --cp_degree 1 --tp_degree 1"
 DDP_16="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 16 --dp_shards 1 --cp_degree 1 --tp_degree 1"
 DDP_32="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 32 --dp_shards 1 --cp_degree 1 --tp_degree 1"
+DDP_24="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 24 --dp_shards 1 --cp_degree 1 --tp_degree 1"
 
 # Parallel arguments
 parallel_cmd=(
-  $DDP_8
+  $DDP_32
 )
 
 # Model arguments
@@ -65,21 +66,22 @@ dataloader_cmd=(
 # Diffusion arguments
 diffusion_cmd=(
   --flow_weighting_scheme "logit_normal"
+  --flow_logit_mean 0.5
+  --flow_logit_std 1
 )
-
 # Training arguments
 training_cmd=(
   --training_type "full-finetune"
   --seed 42
-  --batch_size 2
+  --batch_size 4
   --image_batch_size 16
-  --train_steps 4000
-  # --resume_from_checkpoint "latest"
-  --gradient_accumulation_steps 2
+  --train_steps 20000
+  --gradient_accumulation_steps 4
   --gradient_checkpointing
-  --checkpointing_steps 500
-  --checkpointing_limit 3
-  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-pexel-stage2/model_weights/004000/transformer"
+  --resume_from_checkpoint "10000"
+  --checkpointing_steps 250
+  --checkpointing_limit 10
+  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-reconstruction-warmup/model_weights/005000/transformer"
   --enable_slicing
   --enable_tiling
 )
@@ -87,30 +89,30 @@ training_cmd=(
 # Optimizer arguments
 optimizer_cmd=(
   --optimizer "adamw"
-  --lr 5e-5
+  --lr 1e-4
   --lr_scheduler "constant_with_warmup"
   --lr_warmup_steps 500
   --lr_num_cycles 1
   --beta1 0.9
-  --beta2 0.99
-  --weight_decay 1e-4
+  --beta2 0.95
+  --weight_decay 0.02
   --epsilon 1e-8
-  --max_grad_norm 1.0
+  --max_grad_norm 0.05
 )
 
 # Validation arguments
 validation_cmd=(
   --validation_dataset_file "$VALIDATION_DATASET_FILE"
-  --validation_steps 100000
+  --validation_steps 500000
 )
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-ibq-key-frame-pexel-flowgt20"
-  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pexel-flowgt20"
+  --tracker_name "finetrainers-wan-ibq-key-frame-video-reconstruction"
+  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-video-reconstruction"
   --init_timeout 600
   --nccl_timeout 600
-  --report_to "none"
+  --report_to "wandb"
 )
 
 # Execute training with torchrun

@@ -76,7 +76,7 @@ training_cmd=(
   --gradient_accumulation_steps 4
   --gradient_checkpointing
   --disable_dataloader_resume "true"
-  --resume_from_checkpoint "latest"
+  # --resume_from_checkpoint "latest"
   --checkpointing_steps 500
   --checkpointing_limit 3
   --transformer_id "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B/transformer"

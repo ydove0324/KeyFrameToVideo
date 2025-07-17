@@ -29,8 +29,8 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 BACKEND="ptd"
 
 # Dataset configuration
-TRAINING_DATASET_CONFIG="examples/training/sft/wan/pexel_flowgt20/training.json"
-VALIDATION_DATASET_FILE="examples/training/sft/wan/pexel_flowgt20/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/sft/wan/joint-overfit-test/training.json"
+VALIDATION_DATASET_FILE="examples/training/sft/wan/joint-overfit-test/validation.json"
 
 # Parallel strategy configuration
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -66,20 +66,19 @@ dataloader_cmd=(
 diffusion_cmd=(
   --flow_weighting_scheme "logit_normal"
 )
-
 # Training arguments
 training_cmd=(
   --training_type "full-finetune"
   --seed 42
   --batch_size 2
   --image_batch_size 16
-  --train_steps 4000
-  # --resume_from_checkpoint "latest"
-  --gradient_accumulation_steps 2
+  --train_steps 5000
+  --gradient_accumulation_steps 4
   --gradient_checkpointing
+  --disable_dataloader_resume "true"
   --checkpointing_steps 500
   --checkpointing_limit 3
-  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-pixabay-img-pexel-stage2/model_weights/004000/transformer"
+  --transformer_id "/share/project/huangxu/model/Wan2.1-KeyFrame2V-1.3B/transformer"
   --enable_slicing
   --enable_tiling
 )
@@ -87,7 +86,7 @@ training_cmd=(
 # Optimizer arguments
 optimizer_cmd=(
   --optimizer "adamw"
-  --lr 5e-5
+  --lr 1e-4
   --lr_scheduler "constant_with_warmup"
   --lr_warmup_steps 500
   --lr_num_cycles 1
@@ -101,16 +100,16 @@ optimizer_cmd=(
 # Validation arguments
 validation_cmd=(
   --validation_dataset_file "$VALIDATION_DATASET_FILE"
-  --validation_steps 100000
+  --validation_steps 500000
 )
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-ibq-key-frame-pexel-flowgt20"
-  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-pexel-flowgt20"
+  --tracker_name "finetrainers-wan-ibq-key-frame-joint-overfit-test"
+  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-joint-overfit-test"
   --init_timeout 600
   --nccl_timeout 600
-  --report_to "none"
+  --report_to "wandb"
 )
 
 # Execute training with torchrun
