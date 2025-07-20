@@ -90,6 +90,7 @@ def prepare_sigmas(
     flow_logit_mean: float = 0.0,
     flow_logit_std: float = 1.0,
     flow_mode_scale: float = 1.29,
+    flow_shift: float = 1.0,
     device: torch.device = torch.device("cpu"),
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
@@ -103,6 +104,7 @@ def prepare_sigmas(
             device=device,
             generator=generator,
         )
+        weights = default_flow_shift(weights, flow_shift)
         indices = (weights * num_train_timesteps).long()
     elif isinstance(scheduler, CogVideoXDDIMScheduler):
         # TODO(aryan): Currently, only uniform sampling is supported. Add more sampling schemes.

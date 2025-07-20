@@ -455,6 +455,7 @@ class SFTTrainer(Trainer):
                 flow_logit_mean=self.args.flow_logit_mean,
                 flow_logit_std=self.args.flow_logit_std,
                 flow_mode_scale=self.args.flow_mode_scale,
+                flow_shift=self.args.flow_shift,
                 device=device,
                 generator=self.state.generator,
             )
@@ -563,7 +564,7 @@ class SFTTrainer(Trainer):
                 # logs["timesteps"] = wandb.plot.scatter(
                 #     timesteps_table, "step", "timesteps", title="Timesteps distribution"
                 # )
-                # timesteps_buffer = []
+                timesteps_buffer = []
 
                 logs["train/observed_data_samples"] = train_state.observed_data_samples
 

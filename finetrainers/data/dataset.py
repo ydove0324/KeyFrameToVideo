@@ -427,6 +427,7 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         dataset_name: str,
         infinite: bool = False,
         column_names: Union[str, List[str]] = "__auto__",
+        image_column_names: Union[str, List[str]] = "__auto__",
         weights: Dict[str, float] = -1,
         **kwargs,
     ) -> None:
@@ -485,11 +486,19 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
             else:
                 raise ValueError(f"Unsupported type for column_name: {type(column_names)}")
 
-        for column_names in constants.SUPPORTED_IMAGE_FILE_EXTENSIONS:
-            if column_names in data.column_names:
-                data = data.cast_column(column_names, datasets.Image(mode="RGB"))
-                data = data.rename_column(column_names, "image")
-                break
+        if image_column_names == "__auto__":
+            for column_names in constants.SUPPORTED_IMAGE_FILE_EXTENSIONS:
+                if column_names in data.column_names:
+                    data = data.cast_column(column_names, datasets.Image(mode="RGB"))
+                    data = data.rename_column(column_names, "image")
+                    break
+        else:
+            if image_column_names not in data.column_names:
+                raise ValueError(
+                    f"Image column {image_column_names} not found in the dataset. Available columns are: {data.column_names}"
+                )
+            data = data.cast_column(image_column_names, datasets.Image(mode="RGB"))
+            data = data.rename_column(image_column_names, "image")
 
         self._data = data
         self._sample_index = 0
@@ -508,8 +517,11 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                 self._sample_index += 1
                 if self.using_tar_files:
                     caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
-                    sample["caption"] = sample["json"][caption_column]
-                    sample.pop("json", None)
+                    if "json" in sample:
+                        sample["caption"] = sample["json"][caption_column]
+                        sample.pop("json", None)
+                    else:
+                        sample["caption"] = sample[caption_column]
                 else:
                     caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
                     sample["caption"] = sample[caption_column]
@@ -536,6 +548,7 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         dataset_name: str,
         infinite: bool = False,
         column_names: Union[str, List[str]] = "__auto__",
+        video_column_names: Union[str, List[str]] = "__auto__",
         weights: Dict[str, float] = -1,
         **kwargs,
     ) -> None:
@@ -604,11 +617,17 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
             else:
                 raise ValueError(f"Unsupported type for column_name: {type(column_names)}")
 
-        for column_names in constants.SUPPORTED_VIDEO_FILE_EXTENSIONS:
-            if column_names in data.column_names:
-                data = data.rename_column(column_names, "video")
-                data = data.cast_column("video", datasets.Video())
-                break
+        if video_column_names == "__auto__":
+            for column_names in constants.SUPPORTED_VIDEO_FILE_EXTENSIONS:
+                if column_names in data.column_names:
+                    data = data.rename_column(column_names, "video")
+                    data = data.cast_column("video", datasets.Video())
+                    break
+        else:
+            if video_column_names not in data.column_names:
+                raise ValueError(
+                    f"Video column {video_column_names} not found in the dataset. Available columns are: {data.column_names}"
+                )
 
         self._data = data
         self._sample_index = 0
@@ -627,8 +646,11 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                 self._sample_index += 1
                 if self.using_tar_files:
                     caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
-                    sample["caption"] = sample["json"][caption_column]
-                    sample.pop("json", None)
+                    if "json" in sample:
+                        sample["caption"] = sample["json"][caption_column]
+                        sample.pop("json", None)
+                    else:
+                        sample["caption"] = sample[caption_column]
                 else:
                     caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
                     sample["caption"] = sample[caption_column]
@@ -1019,6 +1041,7 @@ def _initialize_webdataset(
 ) -> torch.utils.data.IterableDataset:
     logger.info(f"Streaming webdataset {dataset_name} from the HF Hub")
     _caption_options = _caption_options or {}
+    logger.info(f"caption_options: {_caption_options}")
     if dataset_type == "image":
         return ImageWebDataset(dataset_name, infinite=infinite, **_caption_options)
     else:
