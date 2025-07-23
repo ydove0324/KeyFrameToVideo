@@ -121,6 +121,7 @@ def process_video(
     max_gpu_clips: int,
     threads: int,
     gpu_idx: int,
+    max_clip_per_video: int,
 ):
     torch.cuda.set_device(gpu_idx)
     stem = pathlib.Path(vpath).stem
@@ -128,27 +129,35 @@ def process_video(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     vr = decord.VideoReader(vpath, num_threads=12)
-    total_frames = len(vr)
+    total_frames = min(max_clip_per_video*clip_len, len(vr))
     if target_hw is None:
         target_hw = choose_best_resolution(vr[0].shape[:2])
 
-    clips_per_batch = max_gpu_clips
-    frames_per_batch = clips_per_batch * clip_len
+    # 一开始就获取所有帧数据
+    print(f"Loading all {total_frames} frames from {vpath}...")
+    all_frames = vr.get_batch(range(total_frames))
+    if not isinstance(all_frames, torch.Tensor):
+        all_frames = torch.from_numpy(all_frames.asnumpy() if hasattr(all_frames, "asnumpy") else all_frames)
+    
     total_clips = total_frames // clip_len
+    print(f"Processing {total_clips} clips...")
 
     encode_pool = ThreadPoolExecutor(max_workers=threads)
     futures = []
 
+    # 按批次处理clips
+    clips_per_batch = max_gpu_clips
     clip_idx = 0
+    
     for start_clip in range(0, total_clips, clips_per_batch):
         batch_clips = min(clips_per_batch, total_clips - start_clip)
         start_frame = start_clip * clip_len
         end_frame = start_frame + batch_clips * clip_len
-        raw = vr.get_batch(range(start_frame, end_frame))
-        if not isinstance(raw, torch.Tensor):
-            raw = torch.from_numpy(raw.asnumpy() if hasattr(raw, "asnumpy") else raw)
-
-        resized = resize_gpu_batch(raw, target_hw, clip_len)
+        
+        # 从已加载的帧中切片
+        batch_frames = all_frames[start_frame:end_frame]
+        
+        resized = resize_gpu_batch(batch_frames, target_hw, clip_len)
         for clip in resized:
             clip_path = str(out_dir / f"clip_{clip_idx:04d}.mp4")  # Convert Path to string
             fut = encode_pool.submit(
@@ -180,6 +189,7 @@ def main():
     ap.add_argument("--threads", type=int, default=8, help="parallel encoders per video")
     ap.add_argument("--gpus", default="0", help="comma‑separated CUDA indices, e.g. 0,1")
     ap.add_argument("--flow_stats", help="Path to the JSONL file containing flow statistics")
+    ap.add_argument("--max-clip-per-video", type=int, default=10, help="maximum number of clips to process per video")
     args = ap.parse_args()
 
     gpu_ids = parse_gpus(args.gpus) if torch.cuda.is_available() else []
@@ -236,6 +246,7 @@ def main():
                 args.max_gpu_clips,
                 args.threads,
                 next(gpu_cycle),
+                args.max_clip_per_video, # Pass args.max_clip_per_video
             ): vp
             for vp in vids
         }
