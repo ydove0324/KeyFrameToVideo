@@ -510,23 +510,41 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         if self._sample_index == 0:
             return iter(self._data)
         return iter(self._data.skip(self._sample_index))
+    def _get_data_iter_with_skip_current(self):
+        return iter(self._data.skip(self._sample_index + 1))
 
     def __iter__(self):
         while True:
-            for sample in self._get_data_iter():
-                self._sample_index += 1
-                if self.using_tar_files:
-                    caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
-                    if "json" in sample:
-                        sample["caption"] = sample["json"][caption_column]
-                        sample.pop("json", None)
+            iterator = self._get_data_iter()
+            while True:
+                try:
+                    sample = next(iterator)
+                except StopIteration:
+                    break
+                except Exception as e:
+                    logger.warning(f"Error getting next sample: {e}. Skipping...")
+                    iterator = self._get_data_iter_with_skip_current()
+                    continue
+                
+                try:
+                    # 样本处理逻辑
+                    self._sample_index += 1
+                    if self.using_tar_files:
+                        caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
+                        if "json" in sample:
+                            sample["caption"] = sample["json"][caption_column]
+                            sample.pop("json", None)
+                        else:
+                            sample["caption"] = sample[caption_column]
                     else:
+                        caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
                         sample["caption"] = sample[caption_column]
-                else:
-                    caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
-                    sample["caption"] = sample[caption_column]
-                yield sample
+                    yield sample
+                except Exception as e:
+                    logger.warning(f"Error processing sample at index {self._sample_index}: {e}. Skipping...")
+                    continue
 
+            # 处理迭代器耗尽后的逻辑
             if not self.infinite:
                 logger.warning(f"Dataset {self.dataset_name} has run out of data")
                 break
@@ -640,22 +658,41 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
             return iter(self._data)
         return iter(self._data.skip(self._sample_index))
 
+    def _get_data_iter_with_skip_current(self):
+        return iter(self._data.skip(self._sample_index + 1))
+
     def __iter__(self):
         while True:
-            for sample in self._get_data_iter():
-                self._sample_index += 1
-                if self.using_tar_files:
-                    caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
-                    if "json" in sample:
-                        sample["caption"] = sample["json"][caption_column]
-                        sample.pop("json", None)
+            iterator = self._get_data_iter()
+            while True:
+                try:
+                    sample = next(iterator)
+                except StopIteration:
+                    break
+                except Exception as e:
+                    logger.warning(f"Error getting next sample: {e}. Skipping...")
+                    iterator = self._get_data_iter_with_skip_current()
+                    continue
+                
+                try:
+                    # 样本处理逻辑
+                    self._sample_index += 1
+                    if self.using_tar_files:
+                        caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
+                        if "json" in sample:
+                            sample["caption"] = sample["json"][caption_column]
+                            sample.pop("json", None)
+                        else:
+                            sample["caption"] = sample[caption_column]
                     else:
+                        caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
                         sample["caption"] = sample[caption_column]
-                else:
-                    caption_column = random.choices(self._caption_columns, weights=self._weights, k=1)[0]
-                    sample["caption"] = sample[caption_column]
-                yield sample
+                    yield sample
+                except Exception as e:
+                    logger.warning(f"Error processing sample at index {self._sample_index}: {e}. Skipping...")
+                    continue
 
+            # 处理迭代器耗尽后的逻辑
             if not self.infinite:
                 logger.warning(f"Dataset {self.dataset_name} has run out of data")
                 break
@@ -861,9 +898,12 @@ class IterableCombinedDataset(torch.utils.data.IterableDataset, torch.distribute
         self.buffer_size = buffer_size
         self.shuffle = shuffle
         self.prof = prof
+        
+        
         logger.info(
             f"Initializing IterableCombinedDataset with the following configuration:\n"
             f"  - Number of Datasets: {len(datasets)}\n"
+            f"  - Original Weights: {weights}\n"
             f"  - Buffer Size: {buffer_size}\n"
             f"  - Shuffle: {shuffle}\n"
         )
@@ -872,27 +912,51 @@ class IterableCombinedDataset(torch.utils.data.IterableDataset, torch.distribute
         logger.info(f"Starting IterableCombinedDataset with {len(self.datasets)} datasets")
         iterators = [iter(dataset) for dataset in self.datasets]
         buffer = []
-        # Calculate per_iter based on weights
-        weights = [weight / sum(self.weights) for weight in self.weights]
-        per_iters = [max(1, int(self.buffer_size * weight)) for weight in weights]
         
-        for index, (it, per_iter) in enumerate(zip(iterators, per_iters)):
-            for _ in tqdm(range(per_iter), desc=f"Filling buffer from data iterator {index}"):
-                try:
-                    buffer.append((it, next(it)))
-                except StopIteration:
-                    continue
+        # Fill buffer with random samples from each dataset based on adjusted weights
+        for _ in tqdm(range(self.buffer_size), desc="Filling buffer with random samples"):
+            # Randomly select dataset based on adjusted weights
+            selected_dataset_idx = random.choices(
+                range(len(iterators)), 
+                weights=self.weights, 
+                k=1
+            )[0]
+            
+            try:
+                sample = next(iterators[selected_dataset_idx])
+                buffer.append(sample)
+            except StopIteration:
+                # If this dataset is exhausted, remove it from consideration
+                self.weights[selected_dataset_idx] = 0
+                # If all datasets are exhausted, break
+                if sum(self.weights) == 0:
+                    break
+                continue
 
         while len(buffer) > 0:
             idx = 0
             if self.shuffle:
                 idx = random.randint(0, len(buffer) - 1)
-            current_it, sample = buffer.pop(idx)
+            sample = buffer.pop(idx)
             yield sample
-            try:
-                buffer.append((current_it, next(current_it)))
-            except StopIteration:
-                pass
+            
+            # Add new sample to buffer with random selection
+            if sum(self.weights) > 0:
+                selected_dataset_idx = random.choices(
+                    range(len(iterators)), 
+                    weights=self.weights, 
+                    k=1
+                )[0]
+                
+                try:
+                    new_sample = next(iterators[selected_dataset_idx])
+                    buffer.append(new_sample)
+                except StopIteration:
+                    # If this dataset is exhausted, remove it from consideration
+                    self.weights[selected_dataset_idx] = 0
+                    # If all datasets are exhausted, continue until buffer is empty
+                    if sum(self.weights) == 0:
+                        continue
 
     def load_state_dict(self, state_dict):
         for dataset, dataset_state_dict in zip(self.datasets, state_dict["datasets"]):
