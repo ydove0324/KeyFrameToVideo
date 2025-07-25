@@ -162,7 +162,11 @@ class ModelSpecification:
                 continue
             collated_d = [d[key] for d in data]
             if isinstance(collated_d[0], torch.Tensor):
-                collated_d = torch.cat(collated_d)
+                try:
+                    collated_d = torch.cat(collated_d)
+                except:
+                    # 如果 tensor 纬度不一致，则保持List
+                    pass
             collated_data[key] = collated_d
         return collated_data
 
@@ -176,7 +180,11 @@ class ModelSpecification:
             collated_d = [d[key] for d in data]
             # TODO(aryan): Support multi-resolution collation
             if isinstance(collated_d[0], torch.Tensor):
-                collated_d = torch.cat(collated_d)
+                try:
+                    collated_d = torch.cat(collated_d)
+                except:
+                    # 如果 tensor 纬度不一致，则保持List
+                    pass
             collated_data[key] = collated_d
         return collated_data
 

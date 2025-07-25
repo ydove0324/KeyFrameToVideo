@@ -153,22 +153,27 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         Returns:
             Tuple of (quant, qloss, indices) tensors
         """
-        MAX_BATCH_SIZE = 2
+        MAX_BATCH_SIZE = 8
         total_size = images.size(0)
-        
+
         # Initialize lists to store results
         all_quants = []
         all_qlosses = []
         all_indices = []
         
         # Process in batches
+        # print(f"Encoding {total_size} images in batches of {MAX_BATCH_SIZE}")
+        import time
+        
         for start_idx in range(0, total_size, MAX_BATCH_SIZE):
+            t0 = time.time()
             end_idx = min(start_idx + MAX_BATCH_SIZE, total_size)
             batch_images = images[start_idx:end_idx]
-            
+            t1 = time.time()
             # Encode current batch
             quant, qloss, (_, _, indices) = ibq_model.encode(batch_images)
-            
+            t2 = time.time()
+            # print(f"Batch {start_idx//MAX_BATCH_SIZE+1} encoded in {t2-t1} seconds, total time: {t2-t0}")
             # Store results
             all_quants.append(quant)
             all_qlosses.append(qloss)
@@ -208,7 +213,6 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
             output[b, :, transformed_indices[b].long()] = key_frames_quants[b].transpose(0, 1)
         
         return output
-
     def forward(
         self,
         ibq_model,
@@ -226,6 +230,10 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
 
         device = ibq_model.device
         dtype = ibq_model.dtype
+        # if image is not None:
+        #     print(f"image is not None, image shape: {image.shape}")
+        # else:
+        #     print(f"image is None, video shape: {video.shape}")
 
         # Extract key frames from video based on key_frames_indices
         # video: [B, F, C, H, W], key_frames_indices: [B, _F]
@@ -245,6 +253,7 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         assert key_frames.max() < 1.0 + 2e-1 and key_frames.min() > -1.0 - 2e-1, "Key frames must be normalized to [-1, 1]"
         key_frames = key_frames.to(device=device, dtype=dtype)  # [B*_F, C, H, W]
         key_frames_quants, _, _ = self._ibq_encode(ibq_model, key_frames)  # [B*_F, 256, H/16, W/16]
+        del key_frames
         key_frames_quants = key_frames_quants.view(B, _F, 256, H//16,W//16)  # [B, _F, 256, H/16, W/16]
         if self.return_hidden_states:
             # Reshape to [B, 256, (H/16 * W/16 * _F)]

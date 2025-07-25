@@ -409,8 +409,9 @@ class SFTTrainer(Trainer):
             train_state.step < self.args.train_steps and train_state.observed_data_samples < self.args.max_data_samples
         ):
             # 1. Load & preprocess data if required
-            if preprocessor.requires_data:
-                condition_iterator, latent_iterator = self._prepare_data(preprocessor, data_iterator)
+            with self.tracker.timed("timing/preprocess_data"):
+                if preprocessor.requires_data:
+                    condition_iterator, latent_iterator = self._prepare_data(preprocessor, data_iterator)
             # 2. Prepare batch
             with self.tracker.timed("timing/batch_preparation"):
                 try:
