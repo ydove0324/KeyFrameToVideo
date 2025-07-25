@@ -468,6 +468,7 @@ class SFTTrainer(Trainer):
                 with self.tracker.timed("timing/forward"):
                     pred, target, sigmas = self.model_specification.forward(
                         transformer=self.transformer,
+                        ibq_model=self.ibq_model,
                         scheduler=self.scheduler,
                         condition_model_conditions=condition_model_conditions,
                         latent_model_conditions=latent_model_conditions,
@@ -574,6 +575,9 @@ class SFTTrainer(Trainer):
 
             # 7. Save checkpoint if required
             with self.tracker.timed("timing/checkpoint"):
+                if self.checkpointer.should_checkpoint(train_state.step, force=False):
+                    self._delete_components()
+                    self._offload_components()
                 self.checkpointer.save(
                     step=train_state.step, _device=device, _is_main_process=parallel_backend.is_main_process
                 )
@@ -845,6 +849,9 @@ class SFTTrainer(Trainer):
             self._move_components_to_device(list(components.values()))
         self._maybe_torch_compile()
         return pipeline
+
+    def _offload_components(self):
+        self._are_condition_models_loaded = False
 
     def _prepare_data(
         self,

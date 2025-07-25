@@ -329,6 +329,9 @@ class PTDCheckpointer(BaseCheckpointer):
 
         logger.info(f"Checkpointing enabled. Checkpoints will be stored in '{self.output_dir}'")
 
+    def should_checkpoint(self, step: int, force: bool) -> bool:
+        return self._should_checkpoint(step, force)
+
     def save(self, step: int = -1, force: bool = False, *, _device: torch.device, _is_main_process: bool) -> str:
         if not self._should_checkpoint(step, force):
             return None

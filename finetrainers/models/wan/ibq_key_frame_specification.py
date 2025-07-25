@@ -153,7 +153,7 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         Returns:
             Tuple of (quant, qloss, indices) tensors
         """
-        MAX_BATCH_SIZE = 8
+        MAX_BATCH_SIZE = 4
         total_size = images.size(0)
 
         # Initialize lists to store results
@@ -292,7 +292,85 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
                 self.output_names[0]: ibq_latents,
                 self.output_names[1]: latent_condition_mask,
             }
+    @torch.no_grad()
+    def process_batch(self, ibq_model, key_frames: torch.Tensor, key_frames_indices_list: torch.Tensor, num_frames: int):
+        """
+        key_frames: [sum(_F), C, H, W]
+        key_frames_indices_list: [_F1, _F2, ...] 1D array
+        num_frames: int (num_frames 都是一样)
+        """
 
+        device = ibq_model.device
+        dtype = ibq_model.dtype
+        
+
+        # 将来自不同 forward 调用的数据拼接成一个大批次
+        collated_indices = torch.stack(key_frames_indices_list, dim=0)
+        
+        # 获取每个条目的关键帧数量，用于后续 reshape
+        # print("key_frames_indices_list", key_frames_indices_list)
+        # print("key_frames_indices_list[0].shape", key_frames_indices_list[0].shape)
+        num_key_frames_per_item = [p.shape[0] for p in key_frames_indices_list]
+        # 假设所有视频的 H, W, C 相同
+        B = len(key_frames_indices_list)
+        C, H, W = key_frames.shape[1:]
+
+        # --- 2. 执行编码 ---
+       
+        
+        # Process key_frames in batches to avoid memory issues
+        MAX_BATCH_SIZE = 4
+        total_size = key_frames.size(0)
+        all_quants = []
+        key_frames = key_frames.cpu()
+        for start_idx in range(0, total_size, MAX_BATCH_SIZE):
+            end_idx = min(start_idx + MAX_BATCH_SIZE, total_size)
+            # Extract batch and move to device immediately
+            batch_key_frames = key_frames[start_idx:end_idx].to(device=device, dtype=dtype)
+            assert batch_key_frames.max() < 1.0 + 2e-1 and batch_key_frames.min() > -1.0 - 2e-1, "Key frames must be normalized to [-1, 1]"
+            # Encode current batch
+            batch_quants, _, _ = self._ibq_encode(ibq_model, batch_key_frames)
+            all_quants.append(batch_quants)
+            del batch_key_frames
+            torch.cuda.empty_cache()
+        
+        # Concatenate all results
+        key_frames_quants = torch.cat(all_quants, dim=0) # [sum(_F), 256, H/16, W/16]
+        del key_frames
+
+        # --- 3. 拆分与后续处理 ---
+        # 将编码结果按原始条目拆分
+        key_frames_quants_split = key_frames_quants.split(num_key_frames_per_item, dim=0)
+        
+        all_ibq_latents = []
+        all_masks = []
+        
+        for i in range(B):
+            # 为每个条目恢复其批次维度 [1, _F, C', H', W']
+            item_quants = key_frames_quants_split[i].unsqueeze(0)
+            item_indices = collated_indices[i].unsqueeze(0)
+            # 调用原来的后续处理逻辑
+            ibq_latents = self._quant_to_3d_latent(item_quants, item_indices, num_frames)
+            # (这部分创建 mask 的逻辑与原版相同，只是针对单个条目)
+            mask = ibq_latents.new_zeros(1, 1, num_frames, ibq_latents.shape[3], ibq_latents.shape[4])
+            mask[0, :, item_indices[0].long()] = 1
+            
+            first_mask = mask[:, :, :1].clone().repeat_interleave(4, dim=2)
+            latent_condition_mask = torch.cat([first_mask, mask[:, :, 1:]], dim=2)
+            latent_condition_mask = latent_condition_mask.view(
+                1, -1, 4, ibq_latents.shape[-2], ibq_latents.shape[-1]
+            ).transpose(1, 2)
+            
+            all_ibq_latents.append(ibq_latents)
+            all_masks.append(latent_condition_mask)
+        
+        # 将所有结果拼接成最终的批次
+        final_ibq_latents = torch.cat(all_ibq_latents, dim=0)
+        final_masks = torch.cat(all_masks, dim=0)
+        
+        # （如果需要，也可以在这里处理 hidden_states）
+
+        return final_ibq_latents, final_masks
 
 class WanImageEncodeProcessor(ProcessorMixin):
     r"""
@@ -352,6 +430,40 @@ class WanImageEncodeProcessor(ProcessorMixin):
             image_embeds = image_embeds.hidden_states[-2]
         return {self.output_names[0]: image_embeds}
         
+class KeyFrameExtractor(ProcessorMixin):
+    def __init__(self, output_names: List[str]):
+        super().__init__()
+        self.output_names = output_names
+        assert len(self.output_names) == 3
+    
+    def forward(
+        self,
+        video: Optional[List[torch.Tensor]] = None,
+        key_frames_indices: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> int:
+        """
+        Args:
+            video (torch.Tensor): 单个视频数据，形状为 [1, F, C, H, W].
+            key_frames_indices (torch.Tensor): 对应的关键帧索引，形状为 [1, _F].
+
+        Returns:
+            int: 添加后，缓冲区中当前的条目数量。
+        """
+        if video is None or key_frames_indices is None:
+            raise ValueError("video 和 key_frames_indices 必须被提供")
+        if video.shape[0] != 1 or key_frames_indices.shape[0] != 1:
+            raise ValueError(f"此方法设计为一次只接收一条数据 (batch size=1), 但收到的 video batch size 为 {video.shape[0]}")
+
+        # 提取关键帧 (不移动到特定 device，保留在 CPU 上以节省显存)
+        key_frames = video[0, key_frames_indices[0].long()].cpu() # [_F, C, H, W]
+        
+        # 将需要的所有信息打包成一个字典，存入缓冲区
+        return {
+            self.output_names[0]: key_frames,
+            self.output_names[1]: key_frames_indices[0],
+            self.output_names[2]: video.shape[1]
+        }
 
 class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
     def __init__(
@@ -388,20 +500,25 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
             condition_model_processors = [T5Processor(["encoder_hidden_states", "__drop__"])]
         if latent_model_processors is None:             # ATTN! TODO, 搞清楚这里是怎么设计的
             latent_model_processors = [WanLatentEncodeProcessor(["latents", "latents_mean", "latents_std"])]
-            if self.transformer_config.get("image_dim", None) is None:
-                latent_model_processors.append(
-                    WanImageConditioningIBQLatentEncodeProcessor(
-                        ["ibq_latent_condition", "latent_condition_mask"],
-                        return_hidden_states=False
-                    )
-                )
-            else:
-                latent_model_processors.append(
-                    WanImageConditioningIBQLatentEncodeProcessor(
-                        ["ibq_latent_condition", "latent_condition_mask","encoder_hidden_states_image"],
-                        return_hidden_states=True
-                    )
-                )
+            # if self.transformer_config.get("image_dim", None) is None:
+            #     latent_model_processors.append(
+            #         WanImageConditioningIBQLatentEncodeProcessor(
+            #             ["ibq_latent_condition", "latent_condition_mask"],
+            #             return_hidden_states=False
+            #         )
+            #     )
+            # else:
+            #     latent_model_processors.append(
+            #         WanImageConditioningIBQLatentEncodeProcessor(
+            #             ["ibq_latent_condition", "latent_condition_mask","encoder_hidden_states_image"],
+            #             return_hidden_states=True
+            #         )
+            #     )
+            self.ibq_latent_encode_processor = WanImageConditioningIBQLatentEncodeProcessor(
+                ["ibq_latent_condition", "latent_condition_mask"],
+                return_hidden_states=False
+            )
+            latent_model_processors.append(KeyFrameExtractor(["key_frames", "key_frames_indices_list", "num_frames"]))
 
         self.condition_model_processors = condition_model_processors
         self.latent_model_processors = latent_model_processors
@@ -494,6 +611,27 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
 
         return {"transformer": transformer, "scheduler": scheduler}
 
+    def collate_latents(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        IGNORE_KEYS_FOR_COLLATION = {"height", "width", "num_frames", "frame_rate", "rope_interpolation_scale", "return_dict", "attention_kwargs", "cross_attention_kwargs", "joint_attention_kwargs", "latents_mean", "latents_std"}       
+        keys = list(data[0].keys())
+        collated_data = {}
+        for key in keys:
+            if key in IGNORE_KEYS_FOR_COLLATION:
+                collated_data[key] = data[0][key]
+                continue
+            collated_d = [d[key] for d in data]
+            if key == "key_frames":
+                collated_d = torch.cat(collated_d)
+                collated_data[key] = collated_d
+                continue
+            if key == "key_frames_indices_list":
+                collated_data[key] = collated_d
+                continue
+            # TODO(aryan): Support multi-resolution collation
+            if isinstance(collated_d[0], torch.Tensor):
+                collated_d = torch.cat(collated_d)
+            collated_data[key] = collated_d
+        return collated_data
 
     def load_pipeline(
         self,
@@ -611,6 +749,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
     def forward(    # TODO: 这个地方要改
         self,
         transformer: WanTransformer3DModel,
+        ibq_model: IBQ,
         condition_model_conditions: Dict[str, torch.Tensor],
         latent_model_conditions: Dict[str, torch.Tensor],
         sigmas: torch.Tensor,
@@ -622,15 +761,23 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
         latent_condition = latent_condition_mask = None
         if compute_posterior:
             latents = latent_model_conditions.pop("latents")
-            latent_condition = latent_model_conditions.pop("latent_condition", None)
+            latent_condition = latent_model_conditions.pop("ibq_latent_condition", None)
             latent_condition_mask = latent_model_conditions.pop("latent_condition_mask", None)
         else:
             latents = latent_model_conditions.pop("latents")
-            original_latents = latents.clone()
             latents_mean = latent_model_conditions.pop("latents_mean")
             latents_std = latent_model_conditions.pop("latents_std")
-            latent_condition = latent_model_conditions.pop("ibq_latent_condition", None)
-            latent_condition_mask = latent_model_conditions.pop("latent_condition_mask", None)
+            # latent_condition = latent_model_conditions.pop("ibq_latent_condition", None)
+            # latent_condition_mask = latent_model_conditions.pop("latent_condition_mask", None)
+            batched_key_frames = latent_model_conditions.pop("key_frames")
+            batched_key_frames_indices = latent_model_conditions.pop("key_frames_indices_list")
+            num_frames = latent_model_conditions.pop("num_frames")
+            latent_condition, latent_condition_mask = self.ibq_latent_encode_processor.process_batch(
+                ibq_model=ibq_model,
+                key_frames=batched_key_frames,
+                key_frames_indices_list=batched_key_frames_indices,
+                num_frames=num_frames,
+            )
 
             mu, logvar = torch.chunk(latents, 2, dim=1)
             mu = self._normalize_latents(mu, latents_mean, latents_std)
