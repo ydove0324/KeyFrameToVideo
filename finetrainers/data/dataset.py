@@ -822,72 +822,75 @@ class IterableDatasetPreprocessingWrapper(
     def __iter__(self):
         logger.info("Starting IterableDatasetPreprocessingWrapper for the dataset")
         for sample in iter(self.dataset):
-            for column in self.drop_columns:
-                sample.pop(column, None)
+            try:
+                for column in self.drop_columns:
+                    sample.pop(column, None)
 
-            sample = {self.rename_columns.get(k, k): v for k, v in sample.items()}
+                sample = {self.rename_columns.get(k, k): v for k, v in sample.items()}
 
-            for key in sample.keys():
-                if isinstance(sample[key], PIL.Image.Image):
-                    sample[key] = _preprocess_image(sample[key])
-                elif isinstance(sample[key], (decord.VideoReader, torchvision.io.video_reader.VideoReader)):
-                    sample[key] = _preprocess_video(sample[key])
+                for key in sample.keys():
+                    if isinstance(sample[key], PIL.Image.Image):
+                        sample[key] = _preprocess_image(sample[key])
+                    elif isinstance(sample[key], (decord.VideoReader, torchvision.io.video_reader.VideoReader)):
+                        sample[key] = _preprocess_video(sample[key])
 
-            if self.dataset_type == "image":
-                if self.image_resolution_buckets:
-                    sample["_original_num_frames"] = 1
-                    sample["_original_height"] = sample["image"].size(1)
-                    sample["_original_width"] = sample["image"].size(2)
-                    sample["image"] = FF.resize_to_nearest_bucket_image(
-                        sample["image"], self.image_resolution_buckets, self.reshape_mode
-                    )
-                    sample["image"] = torch.clamp(sample["image"], -1.0, 1.0)
-            elif self.dataset_type == "video":
-                if self.video_resolution_buckets:
-                    sample["_original_num_frames"] = sample["video"].size(0)
-                    sample["_original_height"] = sample["video"].size(2)
-                    sample["_original_width"] = sample["video"].size(3)
-                    sample["video"], _first_frame_only = FF.resize_to_nearest_bucket_video(
-                        sample["video"], self.video_resolution_buckets, self.reshape_mode
-                    )
-                    sample["video"] = torch.clamp(sample["video"], -1.0, 1.0)
-                    if _first_frame_only:
-                        msg = (
-                            "The number of frames in the video is less than the minimum bucket size "
-                            "specified. The first frame is being used as a single frame video. This "
-                            "message is logged at the first occurence and for every 128th occurence "
-                            "after that."
+                if self.dataset_type == "image":
+                    if self.image_resolution_buckets:
+                        sample["_original_num_frames"] = 1
+                        sample["_original_height"] = sample["image"].size(1)
+                        sample["_original_width"] = sample["image"].size(2)
+                        sample["image"] = FF.resize_to_nearest_bucket_image(
+                            sample["image"], self.image_resolution_buckets, self.reshape_mode
                         )
-                        logger.log_freq("WARNING", "BUCKET_TEMPORAL_SIZE_UNAVAILABLE", msg, frequency=128)
-                        sample["video"] = sample["video"][:1]
+                        sample["image"] = torch.clamp(sample["image"], -1.0, 1.0)
+                elif self.dataset_type == "video":
+                    if self.video_resolution_buckets:
+                        sample["_original_num_frames"] = sample["video"].size(0)
+                        sample["_original_height"] = sample["video"].size(2)
+                        sample["_original_width"] = sample["video"].size(3)
+                        sample["video"], _first_frame_only = FF.resize_to_nearest_bucket_video(
+                            sample["video"], self.video_resolution_buckets, self.reshape_mode
+                        )
+                        sample["video"] = torch.clamp(sample["video"], -1.0, 1.0)
+                        if _first_frame_only:
+                            msg = (
+                                "The number of frames in the video is less than the minimum bucket size "
+                                "specified. The first frame is being used as a single frame video. This "
+                                "message is logged at the first occurence and for every 128th occurence "
+                                "after that."
+                            )
+                            logger.log_freq("WARNING", "BUCKET_TEMPORAL_SIZE_UNAVAILABLE", msg, frequency=128)
+                            sample["video"] = sample["video"][:1]
 
-            caption = sample["caption"]
-            if isinstance(caption, list):
-                caption = caption[0]
-            if caption.startswith("b'") and caption.endswith("'"):
-                caption = FF.convert_byte_str_to_str(caption)
-            if self.remove_common_llm_caption_prefixes:
-                caption = FF.remove_prefix(caption, constants.COMMON_LLM_START_PHRASES)
-            if self.id_token is not None:
-                caption = f"{self.id_token} {caption}"
-            sample["caption"] = caption
-            if random.random() < self.p_drop_caption:
-                sample["caption"] = ""
+                caption = sample["caption"]
+                if isinstance(caption, list):
+                    caption = caption[0]
+                if caption.startswith("b'") and caption.endswith("'"):
+                    caption = FF.convert_byte_str_to_str(caption)
+                if self.remove_common_llm_caption_prefixes:
+                    caption = FF.remove_prefix(caption, constants.COMMON_LLM_START_PHRASES)
+                if self.id_token is not None:
+                    caption = f"{self.id_token} {caption}"
+                sample["caption"] = caption
+                if random.random() < self.p_drop_caption:
+                    sample["caption"] = ""
 
-            # Handle key_frames_indices if present (similar to ValidationDataset)
-            if sample.get("key_frames_indices", None) is not None:
-                sample["key_frames_indices"] = torch.tensor(sample["key_frames_indices"])
-            if sample.get("json", None) is not None:
-                if sample["json"].get("original_path", None) is not None:
-                    print("original_path:",sample["json"]["original_path"],"__url__:",sample["json"]["__url__"])
-            yield sample
+                # Handle key_frames_indices if present (similar to ValidationDataset)
+                if sample.get("key_frames_indices", None) is not None:
+                    sample["key_frames_indices"] = torch.tensor(sample["key_frames_indices"])
+                if sample.get("json", None) is not None:
+                    if sample["json"].get("original_path", None) is not None:
+                        print("original_path:",sample["json"]["original_path"],"__url__:",sample["json"]["__url__"])
+                yield sample
+            except Exception as e:
+                logger.warning(f"Error processing sample: {e}. Skipping...")
+                continue
 
     def load_state_dict(self, state_dict):
         self.dataset.load_state_dict(state_dict["dataset"])
 
     def state_dict(self):
         return {"dataset": self.dataset.state_dict()}
-
 
 class IterableCombinedDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
     def __init__(self, datasets: List[torch.utils.data.IterableDataset], weights: List[float], buffer_size: int, shuffle: bool = False,prof=None):
