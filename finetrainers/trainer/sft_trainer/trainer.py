@@ -440,11 +440,11 @@ class SFTTrainer(Trainer):
             train_state.observed_data_samples += current_batch_size * parallel_backend._dp_degree
 
             logger.debug(f"Starting training step ({train_state.step}/{self.args.train_steps})")
-
-            latent_model_conditions = utils.align_device_and_dtype(latent_model_conditions, device, dtype)
-            condition_model_conditions = utils.align_device_and_dtype(condition_model_conditions, device, dtype)
-            latent_model_conditions = utils.make_contiguous(latent_model_conditions)
-            condition_model_conditions = utils.make_contiguous(condition_model_conditions)
+            with self.tracker.timed("timing/align_device_and_dtype"):
+                latent_model_conditions = utils.align_device_and_dtype(latent_model_conditions, device, dtype,exclude_keys = ["key_frames"])
+                condition_model_conditions = utils.align_device_and_dtype(condition_model_conditions, device, dtype)
+                latent_model_conditions = utils.make_contiguous(latent_model_conditions)
+                condition_model_conditions = utils.make_contiguous(condition_model_conditions)
 
             # 3. Forward pass
             sigmas = utils.prepare_sigmas(
@@ -575,9 +575,10 @@ class SFTTrainer(Trainer):
 
             # 7. Save checkpoint if required
             with self.tracker.timed("timing/checkpoint"):
-                if self.checkpointer.should_checkpoint(train_state.step, force=False):
-                    self._delete_components()
-                    self._offload_components()
+                # if self.checkpointer.should_checkpoint(train_state.step, force=False):
+                #     module_names = ["text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder", "image_processor", "vae","ibq_model"]
+                #     self._delete_components(module_names)
+                #     self._offload_components()
                 self.checkpointer.save(
                     step=train_state.step, _device=device, _is_main_process=parallel_backend.is_main_process
                 )

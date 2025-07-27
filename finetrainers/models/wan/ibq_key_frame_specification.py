@@ -153,7 +153,7 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         Returns:
             Tuple of (quant, qloss, indices) tensors
         """
-        MAX_BATCH_SIZE = 4
+        MAX_BATCH_SIZE = 3
         total_size = images.size(0)
 
         # Initialize lists to store results
@@ -319,7 +319,7 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
        
         
         # Process key_frames in batches to avoid memory issues
-        MAX_BATCH_SIZE = 4
+        MAX_BATCH_SIZE = 3
         total_size = key_frames.size(0)
         all_quants = []
         key_frames = key_frames.cpu()

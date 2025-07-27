@@ -17,6 +17,8 @@ import torchvision
 from diffusers.utils import load_image, load_video
 from huggingface_hub import list_repo_files, repo_exists, snapshot_download
 from tqdm.auto import tqdm
+import random
+import webdataset as wds
 
 from finetrainers import constants
 from finetrainers import functional as FF
@@ -440,6 +442,7 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         self.dataset_name = dataset_name
         self.infinite = infinite
         self.tar_files = sorted(glob.glob(os.path.join(dataset_name, "*.tar")))
+        random.shuffle(self.tar_files)
         self.using_tar_files = False
         self.using_parquet_files = False
         if len(self.tar_files) == 0:
@@ -447,7 +450,12 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
             self.using_parquet_files = True
         else:
             self.using_tar_files = True
-            data = datasets.load_dataset("webdataset",data_files={"train": self.tar_files},split="train",streaming=True)
+            data = (
+                wds.WebDataset(self.tar_files, handler=wds.handlers.ignore_and_continue,nodesplitter=wds.shardlists.split_by_node,workersplitter=wds.shardlists.split_by_worker)
+                .shuffle(1000)  # buffer大小1000
+                .decode("pil")
+                .repeat()
+            )
 
         if column_names == "__auto__":
             if weights == -1:
@@ -485,20 +493,19 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                 weights = [1] if weights == -1 else [weights.get(column) for column in column_names]
             else:
                 raise ValueError(f"Unsupported type for column_name: {type(column_names)}")
-
         if image_column_names == "__auto__":
+            rename_success = False
             for column_names in constants.SUPPORTED_IMAGE_FILE_EXTENSIONS:
-                if column_names in data.column_names:
-                    data = data.cast_column(column_names, datasets.Image(mode="RGB"))
-                    data = data.rename_column(column_names, "image")
+                try:
+                    data = data.rename(**{"image": column_names})
+                    rename_success = True
                     break
+                except Exception as e:
+                    continue
+            if not rename_success:
+                raise ValueError(f"No image column found in the dataset. Available columns are: {data.column_names}")
         else:
-            if image_column_names not in data.column_names:
-                raise ValueError(
-                    f"Image column {image_column_names} not found in the dataset. Available columns are: {data.column_names}"
-                )
-            data = data.cast_column(image_column_names, datasets.Image(mode="RGB"))
-            data = data.rename_column(image_column_names, "image")
+            data = data.rename(**{"image": image_column_names})
 
         self._data = data
         self._sample_index = 0
@@ -507,9 +514,7 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         self._weights = weights
 
     def _get_data_iter(self):
-        if self._sample_index == 0:
-            return iter(self._data)
-        return iter(self._data.skip(self._sample_index))
+        return iter(self._data)
     def _get_data_iter_with_skip_current(self):
         return iter(self._data.skip(self._sample_index + 1))
 
@@ -521,10 +526,6 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                     sample = next(iterator)
                 except StopIteration:
                     break
-                except Exception as e:
-                    logger.warning(f"Error getting next sample: {e}. Skipping...")
-                    iterator = self._get_data_iter_with_skip_current()
-                    continue
                 
                 try:
                     # 样本处理逻辑
@@ -579,6 +580,7 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         self.dataset_name = dataset_name
         self.infinite = infinite
         self.tar_files = sorted(glob.glob(os.path.join(dataset_name, "*.tar")))
+        random.shuffle(self.tar_files)
         self.using_tar_files = False
         self.using_parquet_files = False
         if len(self.tar_files) == 0:
@@ -634,7 +636,7 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                 weights = [1] if weights == -1 else [weights.get(column) for column in column_names]
             else:
                 raise ValueError(f"Unsupported type for column_name: {type(column_names)}")
-
+    
         if video_column_names == "__auto__":
             for column_names in constants.SUPPORTED_VIDEO_FILE_EXTENSIONS:
                 if column_names in data.column_names:
@@ -672,6 +674,7 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                 except Exception as e:
                     logger.warning(f"Error getting next sample: {e}. Skipping...")
                     iterator = self._get_data_iter_with_skip_current()
+                    self._sample_index += 1
                     continue
                 
                 try:

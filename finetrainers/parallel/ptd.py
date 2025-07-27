@@ -25,9 +25,12 @@ from finetrainers._metadata import ContextParallelModelPlan, CPInput, CPOutput, 
 from finetrainers.data import DPDataLoader
 from finetrainers.logging import get_logger
 from finetrainers.utils import enable_determinism, get_device_info, get_submodule_by_name, unwrap_module
+from finetrainers.data.dataset import ImageWebDataset, VideoWebDataset
 from finetrainers.utils._common import DIFFUSERS_TRANSFORMER_BLOCK_NAMES
+from webdataset import utils as wds_utils  # split_by_node 在这里
 
 from .base import BaseCheckpointer, BaseParallelBackend
+import webdataset as wds
 
 
 if TYPE_CHECKING:
@@ -133,12 +136,22 @@ class PytorchDTensorParallelBackend(BaseParallelBackend):
     def prepare_model(self, model: torch.nn.Module) -> torch.nn.Module:
         return model
 
+
     def prepare_dataset(self, dataset: torch.utils.data.IterableDataset) -> torch.utils.data.IterableDataset:
         if self._dp_degree == 1:
             return dataset
+
         dp_mesh = self.get_mesh()["dp_replicate"]
         dp_local_rank, dp_world_size = dp_mesh.get_local_rank(), dp_mesh.size()
-        dataset._data = datasets.distributed.split_dataset_by_node(dataset._data, dp_local_rank, dp_world_size)
+
+        # 如果是 WebDataset，改用它的分布式切分
+        if isinstance(dataset._data, wds.WebDataset):
+            # 已经划分好了
+            return dataset
+        else:
+            # 保持 HuggingFace Dataset 的原逻辑
+            dataset._data = datasets.distributed.split_dataset_by_node(dataset._data, dp_local_rank, dp_world_size)
+
         logger.debug("PytorchDTensorParallelBackend::prepare_dataset completed!")
         return dataset
 

@@ -27,6 +27,7 @@ def align_device_and_dtype(
     x: Union[torch.Tensor, Dict[str, torch.Tensor]],
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
+    exclude_keys: Optional[List[str]] = None,
 ):
     if isinstance(x, torch.Tensor):
         if device is not None:
@@ -35,9 +36,9 @@ def align_device_and_dtype(
             x = x.to(dtype)
     elif isinstance(x, dict):
         if device is not None:
-            x = {k: align_device_and_dtype(v, device, dtype) for k, v in x.items()}
+            x = {k: align_device_and_dtype(v, device, dtype, exclude_keys) if (exclude_keys is None or k not in exclude_keys) else v for k, v in x.items() }
         if dtype is not None:
-            x = {k: align_device_and_dtype(v, device, dtype) for k, v in x.items()}
+            x = {k: align_device_and_dtype(v, device, dtype, exclude_keys) if (exclude_keys is None or k not in exclude_keys) else v for k, v in x.items() }
     return x
 
 
