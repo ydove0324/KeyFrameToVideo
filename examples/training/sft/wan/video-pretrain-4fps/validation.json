@@ -2,12 +2,12 @@
   "data": [
     {
       "caption": "",
-      "video_path": "data/overfit_video/0CWZMaN4uAE_s006.mp4",
+      "video_path": "data/overfit_video/0CWZMaN4uAE_s001.mp4",
       "num_inference_steps": 50,
       "height": 480,
       "width": 832,
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0,4,8,12,16]]
     },
     {
       "caption": "",
@@ -16,7 +16,7 @@
       "height": 480,
       "width": 832,
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0,4,8,12,16]]
     },
     {
       "caption": "",
@@ -25,7 +25,7 @@
       "height": 480,
       "width": 832,
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0,4,8,12,16]]
     },
     {
       "caption": "",
@@ -34,7 +34,7 @@
       "height": 480,
       "width": 832, 
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0,4,8,12,16]]
     },
     {
       "caption": "",
@@ -43,7 +43,7 @@
       "height": 480,
       "width": 832,
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0,4,8,12,16]]
     }
   ]
 }

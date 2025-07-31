@@ -19,7 +19,7 @@ export NCCL_IB_GID_INDEX=0
 export NCCL_IB_HCA=mlx5_2,mlx5_5
 export NCCL_IB_TIMEOUT=23
 export NCCL_IB_RETRY_CNT=7
-export NCCL_DEBUG=WARN
+export NCCL_DEBUG=INFO
 export TORCH_DISTRIBUTED_DEBUG=INFO
 export OMP_NUM_THREADS=4
 export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:1024"
@@ -29,8 +29,8 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 BACKEND="ptd"
 
 # Dataset configuration
-TRAINING_DATASET_CONFIG="examples/training/sft/wan/video-reconstruction/training.json"
-VALIDATION_DATASET_FILE="examples/training/sft/wan/video-reconstruction/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/sft/wan/video-pretrain-2fps/training.json"
+VALIDATION_DATASET_FILE="examples/training/sft/wan/video-pretrain-2fps/validation.json"
 
 # Parallel strategy configuration
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -40,10 +40,11 @@ DDP_8="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 8 --dp_shards 1 --c
 DDP_16="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 16 --dp_shards 1 --cp_degree 1 --tp_degree 1"
 DDP_32="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 32 --dp_shards 1 --cp_degree 1 --tp_degree 1"
 DDP_24="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 24 --dp_shards 1 --cp_degree 1 --tp_degree 1"
+DDP_64="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 64 --dp_shards 1 --cp_degree 1 --tp_degree 1"
 
 # Parallel arguments
 parallel_cmd=(
-  $DDP_32
+  $DDP_64
 )
 
 # Model arguments
@@ -66,20 +67,21 @@ dataloader_cmd=(
 # Diffusion arguments
 diffusion_cmd=(
   --flow_shift 3
+  # --flow_weighting_scheme "logit_normal"
 )
 # Training arguments
 training_cmd=(
   --training_type "full-finetune"
-  --seed 42
-  --batch_size 4
-  --image_batch_size 16
-  --train_steps 20000
+  --seed 49
+  --batch_size 3
+  --image_batch_size 12
+  --train_steps 25000
   --gradient_accumulation_steps 4
   --gradient_checkpointing
-  --resume_from_checkpoint "18500"
+  --resume_from_checkpoint "13250"
   --checkpointing_steps 250
   --checkpointing_limit 10
-  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-reconstruction-warmup/model_weights/005000/transformer"
+  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-video-reconstruction/model_weights/020000/transformer"
   --enable_slicing
   --enable_tiling
 )
@@ -89,13 +91,13 @@ optimizer_cmd=(
   --optimizer "adamw"
   --lr 1e-4
   --lr_scheduler "constant_with_warmup"
-  --lr_warmup_steps 500
+  --lr_warmup_steps 2000
   --lr_num_cycles 1
   --beta1 0.9
   --beta2 0.95
   --weight_decay 0.02
   --epsilon 1e-8
-  --max_grad_norm 0.1
+  --max_grad_norm 0.15
 )
 
 # Validation arguments
@@ -106,8 +108,8 @@ validation_cmd=(
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-ibq-key-frame-video-reconstruction"
-  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-video-reconstruction"
+  --tracker_name "finetrainers-wan-ibq-key-frame-video-pretrain"
+  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-video-pretrain-2fps"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"

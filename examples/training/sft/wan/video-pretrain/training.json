@@ -1,0 +1,94 @@
+{
+  "datasets": [
+    {
+      "data_root": "/share/project/huangxu/video-data/pexel-clips-webdataset",
+      "dataset_type": "video",
+      "id_token": "",
+      "video_resolution_buckets": [
+        [17, 480, 832], 
+        [17, 832, 480],
+        [17, 480, 480]
+      ],
+      "reshape_mode": "bicubic",
+      "remove_common_llm_caption_prefixes": true,
+      "caption_options": {
+        "column_names": "caption"
+      },
+      "p_drop_caption": 1.0,
+      "weight": 2.0
+    },
+    {
+      "data_root": "/share/project/huangxu/video-data/koala-36m-clip-1s-webdataset",
+      "dataset_type": "video",
+      "id_token": "",
+      "video_resolution_buckets": [
+        [17, 480, 832], 
+        [17, 832, 480],
+        [17, 480, 480],
+        [17, 368, 640],
+        [17, 640, 368]
+      ],
+      "reshape_mode": "bicubic",
+      "remove_common_llm_caption_prefixes": true,
+      "caption_options": {
+        "column_names": "caption"
+      },
+      "p_drop_caption": 1.0,
+      "weight": 2.0
+    },
+    {
+      "data_root": "/share/project/zhuoyanluo/data/dataset/midjourney_0921_facial",
+      "dataset_type": "image",
+      "id_token": "",
+      "image_resolution_buckets": [
+        [480, 832], 
+        [832, 480],
+        [480, 480]
+      ],
+      "reshape_mode": "bicubic",
+      "remove_common_llm_caption_prefixes": true,
+      "caption_options": {
+        "column_names": "jpg.txt",
+        "image_column_names": "jpg.jpg"
+      },
+      "p_drop_caption": 1.0,
+      "weight": 4.0
+    },
+    {
+      "data_root": "/share/project/zhuoyanluo/data/dataset/JourneyDB_wds_split_facial",
+      "dataset_type": "image",
+      "id_token": "",
+      "image_resolution_buckets": [
+        [480, 832], 
+        [832, 480],
+        [480, 480]
+      ],
+      "reshape_mode": "bicubic",
+      "remove_common_llm_caption_prefixes": true,
+      "caption_options": {
+        "column_names": "jpg.txt",
+        "image_column_names": "jpg.jpg"
+      },
+      "p_drop_caption": 1.0,
+      "weight": 2.0
+    },
+    {
+      "data_root": "/share/project/zhangfan/codes/UltraCapsFusion/result/dedup_tars",
+      "dataset_type": "image",
+      "id_token": "",
+      "image_resolution_buckets": [
+        [480, 832],
+        [832, 480],
+        [480, 480]
+      ],
+      "reshape_mode": "bicubic",
+      "remove_common_llm_caption_prefixes": true,
+      "caption_options": {
+        "column_names": "0.txt",
+        "image_column_names": "0.png"
+      },
+      "p_drop_caption": 1.0,
+      "weight": 10.0
+    }
+  ]
+}

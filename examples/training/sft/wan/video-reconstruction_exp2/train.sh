@@ -19,7 +19,7 @@ export NCCL_IB_GID_INDEX=0
 export NCCL_IB_HCA=mlx5_2,mlx5_5
 export NCCL_IB_TIMEOUT=23
 export NCCL_IB_RETRY_CNT=7
-export NCCL_DEBUG=WARN
+export NCCL_DEBUG=INFO
 export TORCH_DISTRIBUTED_DEBUG=INFO
 export OMP_NUM_THREADS=4
 export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:1024"
@@ -29,8 +29,8 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 BACKEND="ptd"
 
 # Dataset configuration
-TRAINING_DATASET_CONFIG="examples/training/sft/wan/video-reconstruction/training.json"
-VALIDATION_DATASET_FILE="examples/training/sft/wan/video-reconstruction/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/sft/wan/video-reconstruction_exp2/training.json"
+VALIDATION_DATASET_FILE="examples/training/sft/wan/video-reconstruction_exp2/validation.json"
 
 # Parallel strategy configuration
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -73,13 +73,14 @@ training_cmd=(
   --seed 42
   --batch_size 4
   --image_batch_size 16
-  --train_steps 20000
+  --train_steps 10000
+  --resume_from_checkpoint "latest"
+  --disable_dataloader_resume
   --gradient_accumulation_steps 4
   --gradient_checkpointing
-  --resume_from_checkpoint "18500"
   --checkpointing_steps 250
-  --checkpointing_limit 10
-  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-reconstruction-warmup/model_weights/005000/transformer"
+  --checkpointing_limit 2
+  --transformer_id "/share/project/huangxu/model/wan-ibq-key-frame-video-reconstruction/model_weights/010000/transformer"
   --enable_slicing
   --enable_tiling
 )
@@ -107,7 +108,7 @@ validation_cmd=(
 # Miscellaneous arguments
 miscellaneous_cmd=(
   --tracker_name "finetrainers-wan-ibq-key-frame-video-reconstruction"
-  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-video-reconstruction"
+  --output_dir "/share/project/huangxu/model/wan-ibq-key-frame-video-reconstruction-exp2"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"

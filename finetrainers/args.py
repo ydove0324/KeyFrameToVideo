@@ -212,6 +212,9 @@ class BaseArgs:
         This flag is ignored if `enable_precomputation` is `False`. The topology of the distributed training run must be
         the same as the one used to precompute the embeddings for this to work correctly (this limitation will be
         addressed in the future).
+    key_frame_intervel (`int`, defaults to `None`):
+        The interval between key frames for video processing. If provided, only frames at this interval will be used
+        for training. This is useful for reducing the number of frames processed during training.
 
     DATALOADER_ARGUMENTS
     --------------------
@@ -412,6 +415,7 @@ class BaseArgs:
     precomputation_dir: Optional[str] = None
     precomputation_once: bool = False
     precomputation_reuse: bool = False
+    key_frame_intervel: Optional[int] = None
 
     # Dataloader arguments
     dataloader_num_workers: int = 0
@@ -543,6 +547,7 @@ class BaseArgs:
             "precomputation_dir": self.precomputation_dir,
             "precomputation_once": self.precomputation_once,
             "precomputation_reuse": self.precomputation_reuse,
+            "key_frame_intervel": self.key_frame_intervel,
         }
         dataset_arguments = get_non_null_items(dataset_arguments)
 
@@ -781,6 +786,7 @@ def _add_dataset_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--precomputation_dir", type=str, default=None)
     parser.add_argument("--precomputation_once", action="store_true")
     parser.add_argument("--precomputation_reuse", action="store_true")
+    parser.add_argument("--key_frame_intervel", type=int, default=None)
 
 
 def _add_dataloader_arguments(parser: argparse.ArgumentParser) -> None:
@@ -945,6 +951,7 @@ def _map_to_args_type(args: Dict[str, Any]) -> BaseArgs:
     result_args.precomputation_dir = args.precomputation_dir or os.path.join(args.output_dir, "precomputed")
     result_args.precomputation_once = args.precomputation_once
     result_args.precomputation_reuse = args.precomputation_reuse
+    result_args.key_frame_intervel = args.key_frame_intervel
 
     # Dataloader arguments
     result_args.dataloader_num_workers = args.dataloader_num_workers

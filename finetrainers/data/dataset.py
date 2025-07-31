@@ -3,14 +3,10 @@ import random
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import datasets
-import datasets.data_files
-import datasets.distributed
-import datasets.exceptions
 import huggingface_hub
 import huggingface_hub.errors
 import numpy as np
 import PIL.Image
-import PIL.JpegImagePlugin
 import torch
 import torch.distributed.checkpoint.stateful
 import torchvision
@@ -27,7 +23,8 @@ from finetrainers.utils import find_files
 from finetrainers.utils.import_utils import is_datasets_version
 import glob
 import os
-
+import tempfile
+from torchvision.io import VideoReader
 
 import decord  # isort:skip
 
@@ -584,21 +581,16 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         self.using_tar_files = False
         self.using_parquet_files = False
         if len(self.tar_files) == 0:
-            # For parquet files, we need to preprocess the video data
-            raw_data = datasets.load_dataset(dataset_name, split="train", streaming=True)
-            
-            # Convert VideoReader to tensor during loading
-            def preprocess_sample(sample):
-                if "video" in sample:
-                    if isinstance(sample["video"], (torchvision.io.video_reader.VideoReader, decord.VideoReader)):
-                        sample["video"] = _preprocess_video(sample["video"])
-                return sample
-            
-            data = raw_data.map(preprocess_sample)
+            data = datasets.load_dataset(dataset_name,split="train",streaming=True)
             self.using_parquet_files = True
         else:
             self.using_tar_files = True
-            data = datasets.load_dataset("webdataset",data_files={"train": self.tar_files},split="train",streaming=True)
+            data = (
+                wds.WebDataset(self.tar_files, handler=wds.handlers.ignore_and_continue,nodesplitter=wds.shardlists.split_by_node,workersplitter=wds.shardlists.split_by_worker)
+                .shuffle(1000)  # buffer大小1000
+                .decode("pil")
+                .repeat()
+            )
 
         if column_names == "__auto__":
             if weights == -1:
@@ -616,7 +608,7 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                     raise ValueError(
                         f"Caption columns {caption_columns} not found in the dataset. Available columns are: {data.column_names}"
                     )
-        else: 
+        else:
             if self.using_tar_files:
                 caption_columns = [column_names]
                 weights = [1] if weights == -1 else [weights.get(column_names)]
@@ -638,17 +630,31 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                 raise ValueError(f"Unsupported type for column_name: {type(column_names)}")
     
         if video_column_names == "__auto__":
+            rename_success = False
             for column_names in constants.SUPPORTED_VIDEO_FILE_EXTENSIONS:
-                if column_names in data.column_names:
-                    data = data.rename_column(column_names, "video")
-                    data = data.cast_column("video", datasets.Video())
+                try:
+                    data = data.rename(**{"video": column_names})
+                    rename_success = True
                     break
+                except Exception as e:
+                    continue
+            if not rename_success:
+                raise ValueError(f"No video column found in the dataset. Available columns are: {data.column_names}")
         else:
-            if video_column_names not in data.column_names:
-                raise ValueError(
-                    f"Video column {video_column_names} not found in the dataset. Available columns are: {data.column_names}"
-                )
+            data = data.rename(**{"video": video_column_names})
 
+        def make_videoreader_from_bytes(video_bytes):
+            # VideoReader 只能读文件，所以写入临时文件
+            tmp = tempfile.NamedTemporaryFile(delete=False,dir="/dev/shm", suffix=".mp4")
+            tmp.write(video_bytes)
+            tmp.flush()
+            tmp.seek(0)
+            return VideoReader(tmp.name, "video")  # 返回 VideoReader 对象
+
+        def cast_video_column(sample):
+            sample["video"] = make_videoreader_from_bytes(sample["video"])
+            return sample
+        data = data.map(cast_video_column)
         self._data = data
         self._sample_index = 0
         self._precomputable_once = False
@@ -656,10 +662,7 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         self._weights = weights
 
     def _get_data_iter(self):
-        if self._sample_index == 0:
-            return iter(self._data)
-        return iter(self._data.skip(self._sample_index))
-
+        return iter(self._data)
     def _get_data_iter_with_skip_current(self):
         return iter(self._data.skip(self._sample_index + 1))
 
@@ -671,11 +674,6 @@ class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
                     sample = next(iterator)
                 except StopIteration:
                     break
-                except Exception as e:
-                    logger.warning(f"Error getting next sample: {e}. Skipping...")
-                    iterator = self._get_data_iter_with_skip_current()
-                    self._sample_index += 1
-                    continue
                 
                 try:
                     # 样本处理逻辑
@@ -796,6 +794,7 @@ class IterableDatasetPreprocessingWrapper(
         reshape_mode: str = "bicubic",
         remove_common_llm_caption_prefixes: bool = False,
         p_drop_caption: float = 0.0,
+        key_frame_interval: Optional[int] = None,
         **kwargs,
     ):
         super().__init__()
@@ -810,6 +809,7 @@ class IterableDatasetPreprocessingWrapper(
         self.reshape_mode = reshape_mode
         self.remove_common_llm_caption_prefixes = remove_common_llm_caption_prefixes
         self.p_drop_caption = p_drop_caption
+        self.key_frame_interval = key_frame_interval
 
         logger.info(
             f"Initializing IterableDatasetPreprocessingWrapper for the dataset with the following configuration:\n"
@@ -881,6 +881,10 @@ class IterableDatasetPreprocessingWrapper(
                 # Handle key_frames_indices if present (similar to ValidationDataset)
                 if sample.get("key_frames_indices", None) is not None:
                     sample["key_frames_indices"] = torch.tensor(sample["key_frames_indices"])
+                if self.key_frame_interval is not None:
+                    num_frames = sample["video"].size(0)
+                    sample["key_frames_indices"] = torch.tensor([i for i in range(0, num_frames, self.key_frame_interval)])
+                    # print("key_frames_indices:",sample["key_frames_indices"])
                 if sample.get("json", None) is not None:
                     if sample["json"].get("original_path", None) is not None:
                         print("original_path:",sample["json"]["original_path"],"__url__:",sample["json"]["__url__"])

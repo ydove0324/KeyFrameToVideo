@@ -310,6 +310,7 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         # 获取每个条目的关键帧数量，用于后续 reshape
         # print("key_frames_indices_list", key_frames_indices_list)
         # print("key_frames_indices_list[0].shape", key_frames_indices_list[0].shape)
+        # print("key_frames.shape", key_frames.shape)
         num_key_frames_per_item = [p.shape[0] for p in key_frames_indices_list]
         # 假设所有视频的 H, W, C 相同
         B = len(key_frames_indices_list)

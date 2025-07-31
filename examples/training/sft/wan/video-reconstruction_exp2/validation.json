@@ -7,7 +7,7 @@
       "height": 480,
       "width": 832,
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0, 16]]
     },
     {
       "caption": "",
@@ -16,7 +16,7 @@
       "height": 480,
       "width": 832,
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0, 16]]
     },
     {
       "caption": "",
@@ -25,7 +25,7 @@
       "height": 480,
       "width": 832,
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0, 16]]
     },
     {
       "caption": "",
@@ -34,7 +34,7 @@
       "height": 480,
       "width": 832, 
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0, 16]]
     },
     {
       "caption": "",
@@ -43,7 +43,7 @@
       "height": 480,
       "width": 832,
       "num_frames": 17,
-      "key_frames_indices": [[0,16]]
+      "key_frames_indices": [[0, 16]]
     }
   ]
 }
