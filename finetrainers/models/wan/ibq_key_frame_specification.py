@@ -23,7 +23,7 @@ from finetrainers.logging import get_logger
 from finetrainers.models.modeling_utils import ModelSpecification
 from finetrainers.processors import ProcessorMixin, T5Processor
 from finetrainers.typing import ArtifactType, SchedulerType
-from finetrainers.utils import get_non_null_items, safetensors_torch_save_function
+from finetrainers.utils import get_non_null_items, safetensors_torch_save_function, masks_like
 from diffusers.utils import export_to_video
 from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
 from omegaconf import OmegaConf
@@ -482,6 +482,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
         condition_model_processors: List[ProcessorMixin] = None,
         latent_model_processors: List[ProcessorMixin] = None,
         train_modules: List[str] = None,
+        p_first_frame: Optional[float] = 0,  # 直接把第一帧塞到 noisy latent 的概率,默认 0
         **kwargs,
     ) -> None:  # 在一开始的时候把 Conv3D 添加一层，然后再看看 cross-attn 在哪加入
         super().__init__(
@@ -755,9 +756,12 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
         latent_model_conditions: Dict[str, torch.Tensor],
         sigmas: torch.Tensor,
         generator: Optional[torch.Generator] = None,
+        p_first_frame: Optional[float] = 0,
         compute_posterior: bool = True,
         **kwargs,
     ) -> Tuple[torch.Tensor, ...]:
+        if p_first_frame is None:
+            p_first_frame = 0   # 加个补丁明早改回来
         compute_posterior = False  # See explanation in prepare_latents    
         latent_condition = latent_condition_mask = None
         if compute_posterior:
@@ -789,8 +793,15 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
             latents = posterior.sample(generator=generator)
             del posterior
         noise = torch.zeros_like(latents).normal_(generator=generator)
+
+        if latents.shape[2] == 1: # 如果是图片,就不允许把第一帧塞到 noisy latent
+            p_first_frame = 0
+        first_frame_mask = masks_like(latents,p=p_first_frame)
+        first_frame_latents = latents[:,:,0]
         noisy_latents = FF.flow_match_xt(latents, noise, sigmas)
+        noisy_latents = first_frame_mask * noisy_latents + (1 - first_frame_mask) * first_frame_latents.unsqueeze(2)
         _noisy_latents = noisy_latents.clone()
+        # _noisy_latents = first_frame_latents.unsqueeze(2).clone()
         timesteps = (sigmas.flatten() * 1000.0).long()
 
         noisy_latents = torch.cat([noisy_latents, latent_condition_mask, latent_condition], dim=1)
@@ -803,6 +814,7 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
                 return_dict=False,
             )[0]
         target = FF.flow_match_target(noise, latents)
+        target = first_frame_mask * target + (1 - first_frame_mask) * pred
         DEBUG = False
         if DEBUG:
             # noise - x_0 = pred => x_0 = noise - pred
@@ -852,25 +864,25 @@ class WanIBQKeyFrame2VideoModelSpecification(ModelSpecification):
             with torch.no_grad():
                 video_2 = vae.decode(_denormalize_latents(_noisy_latents, latents_mean, latents_std).to(self.vae_dtype)).sample[0]
             print(f"video shape: {video.shape}")
-            with torch.no_grad():
-                no_img_nosiy_latents = torch.cat([_noisy_latents, torch.zeros_like(latent_condition_mask), torch.zeros_like(latent_condition)], dim=1)
-                latent_model_conditions["hidden_states"] = no_img_nosiy_latents.to(latents)
-                # latent_model_conditions["encoder_hidden_states_image"] = torch.zeros_like(latent_model_conditions["encoder_hidden_states_image"])
-                pred_no_img = transformer(
-                    **latent_model_conditions,
-                    **condition_model_conditions,
-                    timestep=timesteps,
-                    return_dict=False,
-                )[0]
-                x_0_no_img = noise - pred_no_img
-                x_0_no_img = _denormalize_latents(x_0_no_img, latents_mean, latents_std)
-                with torch.no_grad():
-                    video_3 = vae.decode(x_0_no_img).sample[0]
+            # with torch.no_grad():
+            #     no_img_nosiy_latents = torch.cat([_noisy_latents, torch.zeros_like(latent_condition_mask), torch.zeros_like(latent_condition)], dim=1)
+            #     latent_model_conditions["hidden_states"] = no_img_nosiy_latents.to(latents)
+            #     # latent_model_conditions["encoder_hidden_states_image"] = torch.zeros_like(latent_model_conditions["encoder_hidden_states_image"])
+            #     pred_no_img = transformer(
+            #         **latent_model_conditions,
+            #         **condition_model_conditions,
+            #         timestep=timesteps,
+            #         return_dict=False,
+            #     )[0]
+            #     x_0_no_img = noise - pred_no_img
+            #     x_0_no_img = _denormalize_latents(x_0_no_img, latents_mean, latents_std)
+            #     with torch.no_grad():
+            #         video_3 = vae.decode(x_0_no_img).sample[0]
             
             # Export video tensor to file using the helper function
             export_video_tensor_to_file(video, f"debug_video/debug_video_{timesteps[0]}.mp4", fps=16)
             export_video_tensor_to_file(video_2, f"debug_video/debug_noisy_video_{timesteps[0]}.mp4", fps=16)
-            export_video_tensor_to_file(video_3, f"debug_video/debug_no_img_video_{timesteps[0]}.mp4", fps=16)
+            # export_video_tensor_to_file(video_3, f"debug_video/debug_no_img_video_{timesteps[0]}.mp4", fps=16)
 
         return pred, target, sigmas
 

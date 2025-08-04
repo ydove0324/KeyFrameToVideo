@@ -473,6 +473,7 @@ class SFTTrainer(Trainer):
                         condition_model_conditions=condition_model_conditions,
                         latent_model_conditions=latent_model_conditions,
                         sigmas=sigmas,
+                        p_first_frame=self.args.p_first_frame,
                         compute_posterior=compute_posterior,
                     )
 

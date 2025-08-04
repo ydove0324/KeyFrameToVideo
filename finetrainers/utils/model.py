@@ -4,7 +4,8 @@ import os
 from typing import Optional
 
 from huggingface_hub import hf_hub_download
-
+import torch
+import random
 
 def resolve_component_cls(
     pretrained_model_name_or_path: str,
@@ -30,3 +31,11 @@ def resolve_component_cls(
     cls_config = model_index_dict[component_name]
     library = importlib.import_module(cls_config[0])
     return getattr(library, cls_config[1])
+
+
+def masks_like(tensor,p=0.2):
+    out = torch.ones(tensor.shape, dtype=tensor.dtype, device=tensor.device)
+    for i in range(tensor.shape[0]):
+        if random.random() < p:
+            out[i,:,0] = torch.zeros_like(out[i,:,0])
+    return out

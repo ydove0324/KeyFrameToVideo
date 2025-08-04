@@ -34,6 +34,7 @@ from .torch import (
     synchronize_device,
     unwrap_module,
 )
+from .model import masks_like
 
 
 def get_parameter_names(obj: Any, method_name: Optional[str] = None) -> Set[str]:

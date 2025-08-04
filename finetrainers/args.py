@@ -416,6 +416,7 @@ class BaseArgs:
     precomputation_once: bool = False
     precomputation_reuse: bool = False
     key_frame_intervel: Optional[int] = None
+    p_first_frame: Optional[float] = None
 
     # Dataloader arguments
     dataloader_num_workers: int = 0
@@ -548,6 +549,7 @@ class BaseArgs:
             "precomputation_once": self.precomputation_once,
             "precomputation_reuse": self.precomputation_reuse,
             "key_frame_intervel": self.key_frame_intervel,
+            "p_first_frame": self.p_first_frame,
         }
         dataset_arguments = get_non_null_items(dataset_arguments)
 
@@ -787,6 +789,7 @@ def _add_dataset_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--precomputation_once", action="store_true")
     parser.add_argument("--precomputation_reuse", action="store_true")
     parser.add_argument("--key_frame_intervel", type=int, default=None)
+    parser.add_argument("--p_first_frame", type=float, default=None)
 
 
 def _add_dataloader_arguments(parser: argparse.ArgumentParser) -> None:
@@ -952,6 +955,7 @@ def _map_to_args_type(args: Dict[str, Any]) -> BaseArgs:
     result_args.precomputation_once = args.precomputation_once
     result_args.precomputation_reuse = args.precomputation_reuse
     result_args.key_frame_intervel = args.key_frame_intervel
+    result_args.p_first_frame = args.p_first_frame
 
     # Dataloader arguments
     result_args.dataloader_num_workers = args.dataloader_num_workers

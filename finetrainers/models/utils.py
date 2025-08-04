@@ -107,3 +107,52 @@ def _expand_conv3d_with_zeroed_weights(
         new_module.bias.zero_()
         new_module.bias.data[: bias.data.shape[0]].copy_(bias.data)
     return new_module
+
+
+def combine_noise_with_first_frame(
+    noise: torch.Tensor, 
+    first_frame_mask: torch.Tensor, 
+    first_frame_latents: torch.Tensor,
+    p: float = 0.0
+) -> torch.Tensor:
+    """
+    Combine noise with first frame latents using masks.
+    
+    Args:
+        noise: Noise tensor of shape [B, C, F, H, W]
+        first_frame_mask: Mask tensor of shape [B, C, F, H, W] 
+        first_frame_latents: First frame latents of shape [B, C, H, W]
+        p: Probability for mask generation (default 0.0 for deterministic)
+        
+    Returns:
+        Combined tensor of same shape as noise
+    """
+    # Ensure first_frame_latents has the right shape for broadcasting
+    # first_frame_latents: [B, C, H, W] -> [B, C, 1, H, W]
+    if first_frame_latents.dim() == 4:
+        first_frame_latents = first_frame_latents.unsqueeze(2)
+    
+    # Generate masks similar to masks_like function
+    mask_shape = noise.shape
+    mask = torch.ones(mask_shape, dtype=noise.dtype, device=noise.device)
+    
+    # Apply mask with probability p
+    if p > 0.0:
+        import random
+        for i in range(mask_shape[0]):  # batch dimension
+            if random.random() < p:
+                mask[i, :, 0] = torch.zeros_like(mask[i, :, 0])
+    
+    # Combine using the mask
+    # Use first_frame_mask for the first frame, noise for the rest
+    combined = torch.where(
+        first_frame_mask.bool(),
+        first_frame_latents,
+        noise
+    )
+    
+    # Apply additional mask if needed
+    if p > 0.0:
+        combined = (1. - mask) * noise + mask * combined
+    
+    return combined
