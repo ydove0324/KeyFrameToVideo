@@ -204,7 +204,29 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
             output[b, :, transformed_indices[b].long()] = key_frames_quants[b].transpose(0, 1)
         
         return output
-        
+
+    def _create_first_frame_mask(self, latents: torch.Tensor, device: torch.device) -> torch.Tensor:
+        """Create mask for first frame to keep it unchanged during inference."""
+        # Create mask with same shape as latents, initialized to zeros
+        mask = torch.ones_like(latents)
+        # Set first frame (index 0) to 1 for all batches
+        mask[:, :, 0, :, :] = 0
+        return mask.to(device)
+
+    @torch.no_grad()
+    def vae_encode(self, image: torch.Tensor) -> torch.Tensor:
+        moments = self.vae._encode(image)
+        latents = moments.to(dtype=self.vae.dtype)
+        mu, logvar = torch.chunk(latents, 2, dim=1)
+        mu = _normalize_latents(mu, self._latents_mean, self._latents_std_inv)
+        logvar = _normalize_latents(logvar, self._latents_mean, self._latents_std_inv)
+        latents = torch.cat([mu, logvar], dim=1)
+
+        posterior = DiagonalGaussianDistribution(latents)
+        latents = posterior.sample()
+        del posterior
+        return latents
+
 
     @torch.no_grad()
     def __call__(
@@ -221,6 +243,7 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         seed: Optional[int] = None,  # Added seed parameter
         save_debug_video_to: Optional[str] = None,  # path or None
         guidance_scale: float = 5.0,
+        use_first_frame: bool = False,  # Added use_first_frame parameter
         *args,
         **kwargs,
     ) -> List[Image.Image]:
@@ -292,16 +315,33 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
             generator.manual_seed(seed)
 
         latents = torch.randn(B, 16, (num_frames - 1) // 4 + 1, height // 8, width // 8, device=device, dtype=dtype, generator=generator)    # 16 vae channels
+        
+        # Save first frame latents if use_first_frame is True
+        first_frame_latents = None
+        first_frame_mask = None
+        if use_first_frame:
+            # Get the first frame from processed key_frames and encode it through VAE
+            # key_frames is now [B*F, 3, H, W], reshape back to [B, F, 3, H, W]
+            key_frames_reshaped = key_frames.view(B, F, 3, height, width)
+            first_frame = key_frames_reshaped[:, 0]  # [B, 3, H, W] - get first frame from each batch
+            
+            # Encode first frame through VAE
+                # Add temporal dimension to make it [B, C, 1, H, W] for VAE encoding
+            first_frame_temporal = first_frame.unsqueeze(2)  # [B, 3, 1, H, W]
+            first_frame_latents = self.vae_encode(first_frame_temporal)
+            first_frame_mask = self._create_first_frame_mask(latents, device)
+            latents = (first_frame_mask * latents + (1 - first_frame_mask) * first_frame_latents)
+        
         self.scheduler.set_timesteps(num_inference_steps, device=device)
-
         # --------------------------------------------------------------
         # 4. Denoising loop
         # --------------------------------------------------------------
 
         for i, t in enumerate(tqdm(self.scheduler.timesteps, desc="inference", unit="step")):
+            
             lat_in = torch.cat([latents, latent_condition_mask, latent_condition], dim=1)
             un_cond_lat_in = torch.cat([latents, torch.zeros_like(latent_condition_mask), torch.zeros_like(latent_condition)], dim=1)
-            if guidance_scale > 0:
+            if guidance_scale != 0:
                 transformer_out = self.transformer(
                     hidden_states=lat_in,
                     encoder_hidden_states=encoder_hidden_states,
@@ -325,16 +365,22 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
                     timestep=t.unsqueeze(0).long(),
                     return_dict=False,
                 )[0]
-
-            if i == 0 and save_debug_video_to is not None:
+            
+            if save_debug_video_to is not None:
                 # save "x₀" for inspection just like the notebook
-                x0 = latents - transformer_out
+                x0 = noise - transformer_out
                 x0_denorm = _denormalize_latents(x0, self._latents_mean, self._latents_std_inv)
                 video = self.vae.decode(x0_denorm).sample
                 frames = self._postprocess(video)
-                export_to_video(frames, save_debug_video_to, fps=16)
+
+                video_path = os.path.join(save_debug_video_to, f"step_{i}.mp4")
+                export_to_video(frames, video_path, fps=16)
+
 
             latents = self.scheduler.step(transformer_out, t, latents, return_dict=False)[0]
+            if use_first_frame:
+                latents = (first_frame_mask * latents + (1 - first_frame_mask) * first_frame_latents)
+
 
         # --------------------------------------------------------------
         # 5. Decode final latents → frames
@@ -351,7 +397,7 @@ import decord
 
 if __name__ == "__main__":
     # load your checkpoints as before …
-    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-video-reconstruction/model_weights/010000"
+    transformer_path = "/share/project/huangxu/model/wan-ibq-key-frame-video-pretrain-first-frame-condition/model_weights/017750"
     model_id = "/share/project/huangxu/model/Wan2.1-T2V-1.3B-diffusers"
 
 
@@ -387,7 +433,7 @@ if __name__ == "__main__":
     # Load state dict
     ibq_model.load_state_dict(ckpt["state_dict"])
     ibq_model.to("cuda")
-    scheduler =  FlowMatchEulerDiscreteScheduler()
+    scheduler =  FlowMatchEulerDiscreteScheduler(shift=5)
     pipe = WanIBQKeyFrame2VideoPipeline(
         text_encoder=text_encoder,
         transformer=transformer,
@@ -396,27 +442,29 @@ if __name__ == "__main__":
         scheduler=scheduler,
         tokenizer=tokenizer,
     ).to("cuda")
-    video_path = "data/pexel_part2_6_validate_videos/b07105779bda487b8ded5a6349bb3dae90f291ce_clip_0045.mp4"
+    video_path = "data/overfit_video/294123638bc0b4bd57e6d64951bebec51ae99cf9_1s.mp4"
+    # video_path = "/share/project/lzx/video_data/sora_test_videos/tokyo-in-the-snow.mp4"
     decord.bridge.set_bridge("torch")
     vr = decord.VideoReader(video_path)
-    key_frames_indices = torch.Tensor([0,16]).to("cuda")
+    key_frames_indices = torch.Tensor([0,8,16]).to("cuda")
     key_frames_indices = key_frames_indices.unsqueeze(0)
-    key_frames = vr.get_batch([0,16]).to("cuda")    # [F,H,W,3]
+    key_frames = vr.get_batch([0,8,16]).to("cuda")    # [F,H,W,3]
     key_frames = key_frames.permute(0, 3, 1, 2)    # [F,3,H,W]
     key_frames = key_frames.unsqueeze(0)    # [B,F,3,H,W] B = 1
     
     
     video = pipe(
         encoder_hidden_states=encoder_hidden_states,
-        seed=49,
+        seed=50,
         key_frames=key_frames,
         key_frames_indices=key_frames_indices,
-        save_debug_video_to="first_frame.mp4",
+        # save_debug_video_to="debug_video",
         height=480,
         width=832,
         num_frames=17,
         num_inference_steps=50,
-        guidance_scale=0
+        guidance_scale=0,
+        use_first_frame=True
     )
     # flow_shift = 3.0  # 5.0 for 720P, 3.0 for 480P
     # pipe = WanPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16).to("cuda")
@@ -428,4 +476,4 @@ if __name__ == "__main__":
     #     num_frames=49,
     #     guidance_scale=0
     # ).frames[0]
-    export_to_video(video, "cfg0_test.mp4", fps=16)
+    export_to_video(video, "test.mp4", fps=16)
