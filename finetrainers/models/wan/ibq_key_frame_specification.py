@@ -302,11 +302,7 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
 
         device = ibq_model.device
         dtype = ibq_model.dtype
-        
 
-        # 将来自不同 forward 调用的数据拼接成一个大批次
-        collated_indices = torch.stack(key_frames_indices_list, dim=0)
-        
         # 获取每个条目的关键帧数量，用于后续 reshape
         # print("key_frames_indices_list", key_frames_indices_list)
         # print("key_frames_indices_list[0].shape", key_frames_indices_list[0].shape)
@@ -349,7 +345,7 @@ class WanImageConditioningIBQLatentEncodeProcessor(ProcessorMixin):
         for i in range(B):
             # 为每个条目恢复其批次维度 [1, _F, C', H', W']
             item_quants = key_frames_quants_split[i].unsqueeze(0)
-            item_indices = collated_indices[i].unsqueeze(0)
+            item_indices = key_frames_indices_list[i].unsqueeze(0)
             # 调用原来的后续处理逻辑
             ibq_latents = self._quant_to_3d_latent(item_quants, item_indices, num_frames)
             # (这部分创建 mask 的逻辑与原版相同，只是针对单个条目)

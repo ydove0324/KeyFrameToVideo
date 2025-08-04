@@ -882,8 +882,12 @@ class IterableDatasetPreprocessingWrapper(
                 if sample.get("key_frames_indices", None) is not None:
                     sample["key_frames_indices"] = torch.tensor(sample["key_frames_indices"])
                 if self.key_frame_interval is not None:
+                    key_frame_interval = self.key_frame_interval
+                    if self.key_frame_interval == -1:
+                        choices = [4,8,16]
+                        key_frame_interval = random.choices(choices,k=1)[0]
                     num_frames = sample["video"].size(0)
-                    sample["key_frames_indices"] = torch.tensor([i for i in range(0, num_frames, self.key_frame_interval)])
+                    sample["key_frames_indices"] = torch.tensor([i for i in range(0, num_frames, key_frame_interval)])
                     # print("key_frames_indices:",sample["key_frames_indices"])
                 if sample.get("json", None) is not None:
                     if sample["json"].get("original_path", None) is not None:
