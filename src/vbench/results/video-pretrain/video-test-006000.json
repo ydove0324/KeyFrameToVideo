@@ -1,0 +1,9 @@
+{
+    "video_dir": "/share/project/huangxu/workspace/KeyFrameToVideo/validation_results/video-pretrain/video-test-006000",
+    "temporal_flickering": 0.9525721910672309,
+    "imaging_quality": 0.6535054374712087,
+    "aesthetic_quality": 0.4963844590462171,
+    "dynamic_degree": 0.7307692307692307,
+    "motion_smoothness": 0.9817438662292045,
+    "background_consistency": 0.9332879873422476
+}

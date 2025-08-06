@@ -54,6 +54,9 @@ class IBQ(nn.Module):
         dec = self.decoder(quant, return_intermediate_feature=return_intermediate_feature)
         return dec
 
+    def get_embedding(self, indices, shape=None):
+        return self.quantize.get_codebook_entry(indices, shape=shape)
+
     def decode_code(self, code_b, shape=None):
         # shape specifying (batch, height, width, channel)
         quant_b = self.quantize.get_codebook_entry(code_b, shape=shape)

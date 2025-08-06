@@ -231,8 +231,10 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
     @torch.no_grad()
     def __call__(
         self,
-        key_frames: torch.Tensor,  # [B,F',3,H,W] F' 是 key_frames 的帧数
         key_frames_indices: torch.Tensor,  # [B,F'] F' 是 key_frames 的帧数
+        key_frames: Optional[torch.Tensor] = None,  # [B,F',3,H,W] F' 是 key_frames 的帧数
+        first_frame: Optional[torch.Tensor] = None,  # [B,3,H,W]
+        ibq_indices: Optional[torch.Tensor] = None,  # [F',H,W] F' 是 key_frames 的帧数
         encoder_hidden_states: Optional[torch.Tensor] = None,  # pre‑encoded text embeddings
         prompt: Optional[str] = None,
         height: int = 480,
@@ -244,6 +246,8 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         save_debug_video_to: Optional[str] = None,  # path or None
         guidance_scale: float = 5.0,
         use_first_frame: bool = False,  # Added use_first_frame parameter
+        return_tensors: bool = False,
+        normalize_key_frames: bool = True,
         *args,
         **kwargs,
     ) -> List[Image.Image]:
@@ -263,19 +267,20 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
             uncond_embeds = self._get_t5_prompt_embeds(prompt="")
 
         import torch.nn.functional as func_F
-        B, F = key_frames.shape[0], key_frames.shape[1]
-        assert key_frames_indices.shape == (B, F), f"key_frames_indices.shape : {key_frames_indices.shape}, should be (B, F) = ({B}, {F})"
-        
-        # First reshape key_frames to combine batch and frame dimensions
-        key_frames = key_frames.view(B * F, 3, key_frames.shape[3], key_frames.shape[4])
-        
-        
-        # Resize key_frames (already tensor) and normalize
-        key_frames = (key_frames.float() / 255.0 - 0.5) / 0.5  # Normalize to [-1, 1] if input is [0, 255]
-        key_frames = func_F.interpolate(key_frames, size=(height, width), mode='bilinear', align_corners=False)
-        key_frames = key_frames.to(device=device, dtype=dtype) # [B*F',3,H,W]
-        key_frames_quants, key_frames_qloss, _ = self._ibq_encode(key_frames) # [B*F',256,H/16,W/16]
-        key_frames_quants = key_frames_quants.view(B, F, 256, height//16, width//16) # Reshape back to [B,F',256,H/16,W/16]
+        B, F = key_frames_indices.shape[0], key_frames_indices.shape[1]
+        if key_frames is not None:
+            # First reshape key_frames to combine batch and frame dimensions
+            key_frames = key_frames.view(B * F, 3, key_frames.shape[3], key_frames.shape[4])
+            # Resize key_frames (already tensor) and normalize
+            if normalize_key_frames:
+                key_frames = (key_frames.float() / 255.0 - 0.5) / 0.5  # Normalize to [-1, 1] if input is [0, 255]
+                key_frames = func_F.interpolate(key_frames, size=(height, width), mode='bilinear', align_corners=False)
+            key_frames = key_frames.to(device=device, dtype=dtype) # [B*F',3,H,W]
+            key_frames_quants, key_frames_qloss, _ = self._ibq_encode(key_frames) # [B*F',256,H/16,W/16]
+            key_frames_quants = key_frames_quants.view(B, F, 256, height//16, width//16) # Reshape back to [B,F',256,H/16,W/16]
+        else: 
+            key_frames_quants = self.ibq_model.get_embedding(indices=ibq_indices)   # [F,H/16,W/16,C]
+            key_frames_quants = key_frames_quants.permute(0,3,1,2).unsqueeze(0) # Reshape back to [B,F',256,H/16,W/16]
         if self.using_cross_attn:
             encoder_hidden_states_image = key_frames_quants.permute(0, 2, 1, 3, 4).flatten(2)   # [B,256,F'*H/16*W/16]
             encoder_hidden_states_image = encoder_hidden_states_image.permute(0, 2, 1)   # [B,F'*H/16*W/16,256]
@@ -315,15 +320,12 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
             generator.manual_seed(seed)
 
         latents = torch.randn(B, 16, (num_frames - 1) // 4 + 1, height // 8, width // 8, device=device, dtype=dtype, generator=generator)    # 16 vae channels
+        noise = latents.clone()
         
         # Save first frame latents if use_first_frame is True
         first_frame_latents = None
         first_frame_mask = None
         if use_first_frame:
-            # Get the first frame from processed key_frames and encode it through VAE
-            # key_frames is now [B*F, 3, H, W], reshape back to [B, F, 3, H, W]
-            key_frames_reshaped = key_frames.view(B, F, 3, height, width)
-            first_frame = key_frames_reshaped[:, 0]  # [B, 3, H, W] - get first frame from each batch
             
             # Encode first frame through VAE
                 # Add temporal dimension to make it [B, C, 1, H, W] for VAE encoding
@@ -387,6 +389,8 @@ class WanIBQKeyFrame2VideoPipeline(DiffusionPipeline):
         # --------------------------------------------------------------
         latents = _denormalize_latents(latents, self._latents_mean, self._latents_std_inv)
         decoded = self.vae.decode(latents).sample
+        if return_tensors:
+            return self._postprocess(decoded),decoded   
         return self._postprocess(decoded)
 
 
@@ -451,7 +455,6 @@ if __name__ == "__main__":
     key_frames = vr.get_batch([0,8,16]).to("cuda")    # [F,H,W,3]
     key_frames = key_frames.permute(0, 3, 1, 2)    # [F,3,H,W]
     key_frames = key_frames.unsqueeze(0)    # [B,F,3,H,W] B = 1
-    
     
     video = pipe(
         encoder_hidden_states=encoder_hidden_states,

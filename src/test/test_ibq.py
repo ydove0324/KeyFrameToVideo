@@ -5,6 +5,7 @@ import sys
 sys.path.append(".")
 from src.model.ibq_tokenizer import IBQ, tokenize_image, reconstruct_image, process_image
 from src.model.ibq_tokenizer.utils import test_noise_robustness
+import numpy as np
 
 if __name__ == "__main__":
     tokenize_path = "/share/project/zhangfan/weights/Emu3.5-Tokenizer/IBQ-XL-f16c131k-FI"
@@ -26,19 +27,12 @@ if __name__ == "__main__":
 
     # Set model to eval mode
     model.eval()
-
-    tokenizer = model
-    import decord
-    video_path = "_tmp/b07105779bda487b8ded5a6349bb3dae90f291ce_clip_0045.mp4"
-    decord.bridge.set_bridge("torch")
-    vr = decord.VideoReader(video_path)
-    first_frame = vr.get_batch([0])  # Shape: (1, H, W, 3)
-    first_frame = first_frame.permute(0, 3, 1, 2)  # Shape: (1, 3, H, W)
-    first_frame = torch.nn.functional.interpolate(first_frame, size=(480, 832), mode='bilinear', align_corners=False)  # Resize
-    first_frame = first_frame.to("cuda")
-    print(first_frame.shape)
-    quant, qloss, indices = process_image(first_frame, model)
-    print(quant.shape)
-    # reconstructed_image = reconstruct_image(quant, model)
-    # reconstructed_image.save("reconstructed_image.png")
-    test_noise_robustness(quant, model)
+    
+    # 读取npy文件
+    npy_file_path = "/share/project/zhangfan/codes/Emu3.5/emu3p5_stage2_55k_topk1024_temp1.0_p1.0_cfg5.0_v4/output_token/rank0_of_world_size4_26.npy"
+    ibq_indices = torch.from_numpy(np.load(npy_file_path)).to("cuda")
+    print(f"Loaded ibq_indices with shape: {ibq_indices.shape}")
+    # print(f"Data type: {ibq_indices.dtype}")
+    embedding = model.get_embedding(indices=ibq_indices)
+    print(embedding.shape)
+    

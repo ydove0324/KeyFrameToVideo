@@ -102,12 +102,16 @@ class VideoMetrics:
 
         # Image input ➜ single frame list
         if suffix in img_exts:
-            img = cv2.imread(video_path)
-            if img is None:
+            try:
+                from PIL import Image
+                img = Image.open(video_path)
+                img = img.convert('RGB')
+                img = img.resize((width, height), Image.Resampling.LANCZOS)
+                img = np.array(img)
+                return [img]
+            except Exception as e:
+                print(f"Failed to load image {video_path}: {e}")
                 return []
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, (width, height))
-            return [img]
 
         # Video input ➜ iterate through frames
         cap = cv2.VideoCapture(video_path)
@@ -240,6 +244,10 @@ class VideoMetrics:
         tensor = (tensor * 2.0 - 1.0).unsqueeze(0)
         return tensor.to(self.device)
 
+
+    
+
+
 def load_pipeline(model_id: str, transformer_path: str, device: Union[str, torch.device] = "cuda") -> WanIBQKeyFrame2VideoPipeline:
     """Load model pipeline"""
     print(f"Loading model from {transformer_path}...")
@@ -256,7 +264,7 @@ def load_pipeline(model_id: str, transformer_path: str, device: Union[str, torch
     image_processor = CLIPImageProcessor.from_pretrained(model_id, subfolder="image_processor")
     text_encoder = UMT5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_id, subfolder="tokenizer")
-    scheduler = FlowMatchEulerDiscreteScheduler()
+    scheduler = FlowMatchEulerDiscreteScheduler(shift=5.0)
     
     # Load IBQ model
     tokenize_path = "/share/project/zhangfan/weights/Emu3.5-Tokenizer/IBQ-XL-f16c131k-FI"
@@ -392,7 +400,7 @@ def run_validation(rank, world_size, args):
             num_frames=num_frames,
             num_inference_steps=50,
             guidance_scale=0,
-            generator=torch.Generator(device).manual_seed(42 + item["idx"])
+            generator=torch.Generator(device).manual_seed(42)
         )
         if rank == 0:
             print(f"Generated frames Successfully")
@@ -411,6 +419,7 @@ def run_validation(rank, world_size, args):
         )
         if rank == 0:
             print(f"Metrics Calculated Successfully")
+        
         # Attach sample index so we can identify low-PSNR items later
         metrics["idx"] = item["idx"]
         metrics["media_path"] = media_path  # Save original media path for later reference

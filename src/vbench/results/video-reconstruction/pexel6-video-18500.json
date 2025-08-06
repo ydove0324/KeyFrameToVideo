@@ -1,0 +1,9 @@
+{
+    "video_dir": "/share/project/huangxu/workspace/KeyFrameToVideo/validation_results/video-reconstruction/pexel6-video-18500",
+    "temporal_flickering": 0.9670556539157024,
+    "imaging_quality": 0.6586144926988634,
+    "aesthetic_quality": 0.48481794811309653,
+    "dynamic_degree": 0.3617021276595745,
+    "motion_smoothness": 0.9832068998537931,
+    "background_consistency": 0.9464184916611259
+}

@@ -34,14 +34,14 @@ def validate(video_dir,output_json_path):
     save_json(result_json, output_json_path)
 if __name__ == "__main__":
     dist_init()
-    submoules_dict = init_submodules(['aesthetic_quality','dynamic_degree'])
+    # submoules_dict = init_submodules(['aesthetic_quality','dynamic_degree'])
     # Iterate from 6250 down to 4250 with step -250 (6250, 6000, ..., 4250)
-    for frames in range(10000, 8500, -500):
+    for frames in range(6000, 1000, -4000):
         # Zero-pad to 5 digits (e.g. 6250 -> 06250)
-        frames_str = f"{frames:05d}"
+        frames_str = f"{frames:06d}"
 
-        video_dir = f"/share/project/huangxu/workspace/KeyFrameToVideo/validation_results/video-reconstruction/pexel6-video-{frames_str}"
-        output_json_path = f"/share/project/huangxu/workspace/KeyFrameToVideo/src/vbench/results/video-reconstruction/pexel6-video-{frames_str}.json"
+        video_dir = f"/share/project/huangxu/workspace/KeyFrameToVideo/validation_results/video-pretrain/video-test-{frames_str}"
+        output_json_path = f"/share/project/huangxu/workspace/KeyFrameToVideo/src/vbench/results/video-pretrain/video-test-{frames_str}.json"
 
         # Ensure result directory exists
         os.makedirs(os.path.dirname(output_json_path), exist_ok=True)
